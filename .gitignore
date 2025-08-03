@@ -28,10 +28,14 @@ demo_*
 
 # Dependency directories
 node_modules/
+deps/spdlog/
 
 # Log files
 *.log
 logs/
+
+# Screen dumps
+dump_*.txt
 
 # Temporary files
 *.tmp

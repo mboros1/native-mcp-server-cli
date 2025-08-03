@@ -1,3 +1,10 @@
+#define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_DEBUG
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/fmt/fmt.h>
+#include <spdlog/fmt/chrono.h>
+
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -82,7 +89,8 @@ public:
     TOOL_INFO,
     UNKNOWN_COMMAND,
     EXIT_WARNING,
-    EXIT_MESSAGE
+    EXIT_MESSAGE,
+    DUMP_SUCCESS
   };
 
 private:
@@ -122,12 +130,15 @@ public:
     
     if (ctrl_c_pending_) {
       auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ctrl_c_time_);
+      SPDLOG_DEBUG("Second Ctrl+C received, elapsed: {}ms", elapsed.count());
       if (elapsed.count() < 2000) {
+        SPDLOG_INFO("Double Ctrl+C detected - requesting exit");
         RequestExit();
         return;
       }
     }
     
+    SPDLOG_DEBUG("First Ctrl+C received");
     ctrl_c_pending_ = true;
     last_ctrl_c_time_ = now;
     display_mode_ = DisplayMode::EXIT_WARNING;
@@ -146,7 +157,10 @@ public:
   }
 
   // Display mode management
-  void SetDisplayMode(DisplayMode mode) { display_mode_ = mode; }
+  void SetDisplayMode(DisplayMode mode) { 
+    SPDLOG_DEBUG("Setting display mode from {} to {}", static_cast<int>(display_mode_), static_cast<int>(mode));
+    display_mode_ = mode; 
+  }
   DisplayMode GetDisplayMode() const { return display_mode_; }
   
   // Tool selection
@@ -175,6 +189,7 @@ class InputHandler {
 private:
   StateManager& state_;
   std::vector<Tool>& tools_;
+  UIRenderer* renderer_ = nullptr;
   
   Tool* FindTool(const std::string& name) {
     for (auto& tool : tools_) {
@@ -184,26 +199,42 @@ private:
     }
     return nullptr;
   }
+  
+  void DumpScreen();
 
 public:
   InputHandler(StateManager& state, std::vector<Tool>& tools) 
     : state_(state), tools_(tools) {}
+    
+  void SetRenderer(UIRenderer* renderer) {
+    renderer_ = renderer;
+  }
 
   void ProcessCommand(const std::string& command) {
     if (command.empty()) return;
     
+    SPDLOG_INFO("Processing command: '{}'", command);
     state_.AddToHistory(command);
     
     if (command == "help") {
+      SPDLOG_DEBUG("Showing help");
       state_.SetDisplayMode(StateManager::DisplayMode::HELP);
-      state_.SelectTool(nullptr);
     } else if (command == "list") {
+      SPDLOG_DEBUG("Showing tool list");
       state_.SetDisplayMode(StateManager::DisplayMode::LIST);
-      state_.SelectTool(nullptr);
+    } else if (command == "dump" || command == "screenshot") {
+      SPDLOG_DEBUG("Dump screen requested");
+      DumpScreen();
     } else if (command == "exit" || command == "quit") {
+      SPDLOG_INFO("Exit command received");
       state_.RequestExit();
     } else {
       Tool* tool = FindTool(command);
+      if (tool) {
+        SPDLOG_DEBUG("Found tool: {}", tool->name);
+      } else {
+        SPDLOG_WARN("Unknown command: {}", command);
+      }
       state_.SelectTool(tool);
     }
   }
@@ -242,6 +273,8 @@ private:
            text("→ List all available tools") | color(Colors::kDimGreen)),
       hbox(text("  <tool>   ") | color(Colors::kCyan), 
            text("→ Show detailed information about a specific tool") | color(Colors::kDimGreen)),
+      hbox(text("  dump     ") | color(Colors::kCyan), 
+           text("→ Save current screen to dump_[timestamp].txt") | color(Colors::kDimGreen)),
       hbox(text("  exit     ") | color(Colors::kCyan), 
            text("→ Exit the application") | color(Colors::kDimGreen)),
       text(""),
@@ -305,6 +338,97 @@ public:
   UIRenderer(const Config& config, const StateManager& state, const std::vector<Tool>& tools)
     : config_(config), state_(state), tools_(tools) {}
 
+  std::string GetScreenText() const {
+    std::stringstream ss;
+    
+    // Header
+    ss << config_.welcomeMessage << "\n";
+    ss << config_.serverName << " v" << config_.serverVersion << "\n";
+    ss << "================================================================================\n\n";
+    
+    // Main content based on state
+    switch (state_.GetDisplayMode()) {
+      case StateManager::DisplayMode::HELP:
+        ss << "▶ COMMANDS\n\n";
+        ss << "  help      → Show this help message\n";
+        ss << "  list      → List all available tools\n";
+        ss << "  <tool>    → Show detailed information about a specific tool\n";
+        ss << "  dump      → Save current screen to dump_[timestamp].txt\n";
+        ss << "  exit      → Exit the application\n\n";
+        ss << "Type 'list' to see all available tools or type a tool name directly.\n";
+        break;
+        
+      case StateManager::DisplayMode::LIST:
+        ss << "◉ AVAILABLE TOOLS\n\n";
+        {
+          std::map<std::string, std::vector<const Tool*>> toolsByCategory;
+          for (const auto& tool : tools_) {
+            toolsByCategory[tool.category].push_back(&tool);
+          }
+          
+          for (const auto& [category, categoryTools] : toolsByCategory) {
+            ss << "▸ " << category << "\n";
+            for (const auto* tool : categoryTools) {
+              ss << "    ◆ " << tool->name << "\n";
+              ss << "      " << tool->description << "\n";
+            }
+            ss << "\n";
+          }
+        }
+        break;
+        
+      case StateManager::DisplayMode::TOOL_INFO:
+        if (auto* tool = state_.GetSelectedTool()) {
+          ss << "◆ " << tool->name << "\n";
+          ss << "  " << tool->category << "\n";
+          ss << "  " << tool->description << "\n";
+          ss << "--------------------------------------------------------------------------------\n";
+          
+          if (!tool->parameters.empty()) {
+            ss << "▸ Parameters\n";
+            for (const auto& param : tool->parameters) {
+              ss << "  • " << param.name << " (" << param.type << ")";
+              if (param.required) {
+                ss << " [required]\n";
+              } else {
+                ss << " [optional]\n";
+              }
+              ss << "    " << param.description << "\n";
+            }
+          }
+        }
+        break;
+        
+      case StateManager::DisplayMode::UNKNOWN_COMMAND:
+        ss << "⚠ Unknown command. Type 'help' for available commands.\n";
+        break;
+        
+      case StateManager::DisplayMode::EXIT_WARNING:
+        ss << "⚠ Press Ctrl+C again to exit\n";
+        break;
+        
+      case StateManager::DisplayMode::EXIT_MESSAGE:
+        ss << "◆ SEE YOU IN THE CYBER WORLD ◆\n";
+        break;
+        
+      case StateManager::DisplayMode::DUMP_SUCCESS:
+        ss << "✓ Screen dumped to file\n";
+        break;
+    }
+    
+    // Footer info
+    ss << "\n================================================================================\n";
+    if (state_.IsCtrlCPending()) {
+      ss << "◉ Press Ctrl+C again to exit\n";
+    } else if (!state_.GetHistory().empty()) {
+      ss << "◉ Last command: " << state_.GetHistory().back() << "\n";
+    } else {
+      ss << "◉ Type 'help' for commands • Ctrl+C twice to exit\n";
+    }
+    
+    return ss.str();
+  }
+
   Element Render() const {
     // Exit immediately if we're exiting
     if (state_.IsExiting()) {
@@ -352,6 +476,10 @@ public:
         main_content.push_back(text("◆ SEE YOU IN THE CYBER WORLD ◆") 
                              | bold | color(Colors::kBrightGreen) | center);
         break;
+      case StateManager::DisplayMode::DUMP_SUCCESS:
+        main_content.push_back(text("✓ Screen dumped to file") 
+                             | bold | color(Colors::kBrightGreen) | center);
+        break;
     }
 
     auto content_area = vbox(main_content) | flex;
@@ -382,6 +510,32 @@ public:
   }
 };
 
+// Implementation of InputHandler::DumpScreen() - must be after UIRenderer definition
+void InputHandler::DumpScreen() {
+  if (!renderer_) {
+    SPDLOG_ERROR("No renderer set for screen dump");
+    return;
+  }
+  
+  // Generate timestamp for filename using fmt
+  auto now = std::chrono::system_clock::now();
+  std::string filename = fmt::format("dump_{:%Y%m%d_%H%M%S}.txt", now);
+  
+  try {
+    std::ofstream file(filename);
+    if (file.is_open()) {
+      file << renderer_->GetScreenText();
+      file.close();
+      SPDLOG_INFO("Screen dumped to {}", filename);
+      state_.SetDisplayMode(StateManager::DisplayMode::DUMP_SUCCESS);
+    } else {
+      SPDLOG_ERROR("Failed to open file for writing: {}", filename);
+    }
+  } catch (const std::exception& e) {
+    SPDLOG_ERROR("Error dumping screen: {}", e.what());
+  }
+}
+
 // ============================================================================
 // Application - Main controller that coordinates everything
 // ============================================================================
@@ -410,6 +564,7 @@ public:
     state_.SetMaxHistorySize(config_.maxHistorySize);
     renderer_ = std::make_unique<UIRenderer>(config_, state_, config_.tools);
     input_handler_ = std::make_unique<InputHandler>(state_, config_.tools);
+    input_handler_->SetRenderer(renderer_.get());
     
     // Setup screen
     screen_.ForceHandleCtrlC(false);
@@ -465,8 +620,10 @@ public:
 
 private:
   void LoadConfig(const std::string& filepath) {
+    SPDLOG_INFO("Loading config from: {}", filepath);
     std::ifstream file(filepath);
     if (!file.is_open()) {
+      SPDLOG_WARN("Config file not found at {}, using defaults", filepath);
       std::cerr << "Warning: Config file not found at " << filepath << ", using defaults\n";
       return;
     }
@@ -480,9 +637,12 @@ private:
     
     auto error = parser.parse(json_str).get(doc);
     if (error) {
+      SPDLOG_ERROR("Failed to parse config file: {}", error_message(error));
       std::cerr << "Warning: Failed to parse config file: " << error << ", using defaults\n";
       return;
     }
+    
+    SPDLOG_DEBUG("Config file parsed successfully");
     
     // Parse config (simplified for brevity)
     try {
@@ -549,24 +709,65 @@ private:
           
           config_.tools.push_back(t);
         }
+        SPDLOG_INFO("Loaded {} tools from config", config_.tools.size());
       }
     } catch (const std::exception& e) {
+      SPDLOG_ERROR("Error reading config values: {}", e.what());
       std::cerr << "Warning: Error reading config values: " << e.what() << "\n";
     }
   }
 };
 
 // ============================================================================
+// Logging Setup
+// ============================================================================
+void SetupLogging() {
+  try {
+    // Create console sink for debugging (won't interfere with TUI)
+    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    console_sink->set_level(spdlog::level::warn); // Only warnings and errors to console
+    
+    // Create file sink
+    auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("mcp-server.log", true);
+    file_sink->set_level(spdlog::level::trace); // Everything to file
+    
+    // Create multi-sink logger
+    std::vector<spdlog::sink_ptr> sinks {console_sink, file_sink};
+    auto logger = std::make_shared<spdlog::logger>("mcp", sinks.begin(), sinks.end());
+    
+    // Set pattern with file location info
+    logger->set_pattern("%Y-%m-%d %H:%M:%S.%e [%^%l%$] [%s:%#] %! › %v");
+    
+    // Register as default logger
+    spdlog::set_default_logger(logger);
+    spdlog::set_level(spdlog::level::trace);
+    
+    SPDLOG_INFO("=== MCP Server Starting ===");
+  } catch (const std::exception& e) {
+    std::cerr << "Failed to setup logging: " << e.what() << "\n";
+  }
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 int main() {
+  SetupLogging();
+  
   try {
+    SPDLOG_INFO("Creating application instance");
     Application app;
+    
+    SPDLOG_INFO("Starting application main loop");
     app.Run();
+    
+    SPDLOG_INFO("Application exited normally");
   } catch (const std::exception& e) {
+    SPDLOG_ERROR("Fatal error: {}", e.what());
     std::cerr << "Error: " << e.what() << "\n";
     return 1;
   }
   
+  spdlog::shutdown();
   return 0;
 }

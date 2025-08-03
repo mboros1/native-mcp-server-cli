@@ -9,6 +9,8 @@ INCLUDES = -I../deps/simdjson -I../deps
 PKG_CONFIG := pkg-config
 FTXUI_CFLAGS := $(shell $(PKG_CONFIG) --cflags ftxui 2>/dev/null)
 FTXUI_LIBS := $(shell $(PKG_CONFIG) --libs ftxui 2>/dev/null)
+SPDLOG_CFLAGS := $(shell $(PKG_CONFIG) --cflags spdlog 2>/dev/null)
+SPDLOG_LIBS := $(shell $(PKG_CONFIG) --libs spdlog 2>/dev/null)
 
 # If pkg-config fails, try common paths
 ifeq ($(FTXUI_LIBS),)
@@ -31,8 +33,8 @@ ifeq ($(FTXUI_LIBS),)
   FTXUI_LIBS += -lftxui-component -lftxui-dom -lftxui-screen
 endif
 
-CXXFLAGS += $(FTXUI_CFLAGS) $(INCLUDES)
-LDFLAGS  += $(FTXUI_LIBS)
+CXXFLAGS += $(FTXUI_CFLAGS) $(SPDLOG_CFLAGS) $(INCLUDES)
+LDFLAGS  += $(FTXUI_LIBS) $(SPDLOG_LIBS)
 
 # ---- build targets ---------------------------------------------------------
 demo: main.cpp ../deps/simdjson/simdjson.cpp
