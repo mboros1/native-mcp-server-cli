@@ -1,0 +1,237 @@
+{
+  "server": {
+    "name": "Native MCP File Operations Server",
+    "version": "1.0.0",
+    "description": "A native MCP server providing file system operations"
+  },
+  "ui": {
+    "welcomeMessage": "🚀 Native MCP File Operations Server",
+    "inputPlaceholder": "Type 'help' or a tool name for info..."
+  },
+  "settings": {
+    "maxHistorySize": 100,
+    "enableLogging": true,
+    "logLevel": "info"
+  },
+  "tools": [
+    {
+      "name": "Read",
+      "description": "Reads a file from the local filesystem",
+      "category": "file_operations",
+      "parameters": {
+        "file_path": {
+          "type": "string",
+          "description": "The absolute path to the file to read",
+          "required": true
+        },
+        "offset": {
+          "type": "number",
+          "description": "The line number to start reading from",
+          "required": false
+        },
+        "limit": {
+          "type": "number",
+          "description": "The number of lines to read",
+          "required": false
+        }
+      },
+      "examples": [
+        "Read /home/user/document.txt",
+        "Read /var/log/system.log offset=100 limit=50"
+      ]
+    },
+    {
+      "name": "Write",
+      "description": "Writes content to a file, creating it if it doesn't exist",
+      "category": "file_operations",
+      "parameters": {
+        "file_path": {
+          "type": "string",
+          "description": "The absolute path to the file to write",
+          "required": true
+        },
+        "content": {
+          "type": "string",
+          "description": "The content to write to the file",
+          "required": true
+        }
+      },
+      "examples": [
+        "Write /tmp/output.txt \"Hello, World!\"",
+        "Write /home/user/config.json '{\"key\": \"value\"}'"
+      ]
+    },
+    {
+      "name": "Edit",
+      "description": "Performs exact string replacements in files",
+      "category": "file_operations",
+      "parameters": {
+        "file_path": {
+          "type": "string",
+          "description": "The absolute path to the file to modify",
+          "required": true
+        },
+        "old_string": {
+          "type": "string",
+          "description": "The text to replace",
+          "required": true
+        },
+        "new_string": {
+          "type": "string",
+          "description": "The text to replace it with",
+          "required": true
+        },
+        "replace_all": {
+          "type": "boolean",
+          "description": "Replace all occurrences (default: false)",
+          "required": false,
+          "default": false
+        }
+      },
+      "examples": [
+        "Edit /path/to/file.py \"old_var\" \"new_var\" replace_all=true",
+        "Edit /etc/config.conf \"debug=false\" \"debug=true\""
+      ]
+    },
+    {
+      "name": "MultiEdit",
+      "description": "Makes multiple edits to a single file in one operation",
+      "category": "file_operations",
+      "parameters": {
+        "file_path": {
+          "type": "string",
+          "description": "The absolute path to the file to modify",
+          "required": true
+        },
+        "edits": {
+          "type": "array",
+          "description": "Array of edit operations to perform sequentially",
+          "required": true
+        }
+      },
+      "examples": [
+        "MultiEdit /src/main.cpp [{\"old\": \"foo\", \"new\": \"bar\"}, {\"old\": \"baz\", \"new\": \"qux\"}]"
+      ]
+    },
+    {
+      "name": "Grep",
+      "description": "Search files using regular expressions (powered by ripgrep)",
+      "category": "search_operations",
+      "parameters": {
+        "pattern": {
+          "type": "string",
+          "description": "The regular expression pattern to search for",
+          "required": true
+        },
+        "path": {
+          "type": "string",
+          "description": "File or directory to search in",
+          "required": false,
+          "default": "."
+        },
+        "output_mode": {
+          "type": "string",
+          "enum": ["content", "files_with_matches", "count"],
+          "description": "Output format",
+          "required": false,
+          "default": "files_with_matches"
+        },
+        "glob": {
+          "type": "string",
+          "description": "Glob pattern to filter files (e.g., \"*.js\")",
+          "required": false
+        }
+      },
+      "examples": [
+        "Grep \"TODO\" /src",
+        "Grep \"function.*test\" glob=\"*.py\" output_mode=content"
+      ]
+    },
+    {
+      "name": "Glob",
+      "description": "Find files by name patterns",
+      "category": "search_operations",
+      "parameters": {
+        "pattern": {
+          "type": "string",
+          "description": "The glob pattern to match files against",
+          "required": true
+        },
+        "path": {
+          "type": "string",
+          "description": "The directory to search in",
+          "required": false,
+          "default": "."
+        }
+      },
+      "examples": [
+        "Glob \"**/*.js\"",
+        "Glob \"src/**/*.test.ts\""
+      ]
+    },
+    {
+      "name": "LS",
+      "description": "Lists files and directories in a given path",
+      "category": "file_operations",
+      "parameters": {
+        "path": {
+          "type": "string",
+          "description": "The absolute path to list",
+          "required": true
+        },
+        "ignore": {
+          "type": "array",
+          "description": "List of glob patterns to ignore",
+          "required": false
+        }
+      },
+      "examples": [
+        "LS /home/user/projects",
+        "LS /src ignore=[\"*.tmp\", \"*.log\"]"
+      ]
+    },
+    {
+      "name": "Bash",
+      "description": "Execute bash commands in a persistent shell session",
+      "category": "system_operations",
+      "parameters": {
+        "command": {
+          "type": "string",
+          "description": "The command to execute",
+          "required": true
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Timeout in milliseconds (max 600000)",
+          "required": false,
+          "default": 120000
+        }
+      },
+      "examples": [
+        "Bash \"git status\"",
+        "Bash \"npm install\" timeout=300000"
+      ]
+    },
+    {
+      "name": "WebFetch",
+      "description": "Fetches content from a URL and processes it",
+      "category": "web_operations",
+      "parameters": {
+        "url": {
+          "type": "string",
+          "description": "The URL to fetch content from",
+          "required": true
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Prompt to run on the fetched content",
+          "required": true
+        }
+      },
+      "examples": [
+        "WebFetch \"https://example.com\" \"Extract main headlines\"",
+        "WebFetch \"https://api.github.com/repos/user/repo\" \"Summarize repository info\""
+      ]
+    }
+  ]
+}
