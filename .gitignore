@@ -1,0 +1,101 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+demo
+demo_*
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-*
+.history/
+
+# Debug files
+*.dSYM/
+*.pdb
+*.ilk
+*.map
+*.exp
+
+# Dependency directories
+node_modules/
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+
+# Config overrides (keep the example config)
+config.local.json
+*.local.*
+
+# Test coverage
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# Documentation build
+docs/_build/
+docs/_site/
+*.pdf
+
+# Package files
+*.tar.gz
+*.zip
+*.7z
+*.rar
+
+# OS generated files
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Python cache (if any scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# CMake (if used later)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile.cmake
+
+# Precompiled headers
+*.gch
+*.pch
+
+# Core dumps
+core
+core.*
+vgcore.*
+
+# Profiling
+*.prof
+gmon.out
+callgrind.out.*
+
+# Security - never commit secrets
+*.pem
+*.key
+*.cert
+.env
+.env.*
+secrets/
+credentials/
