@@ -17,6 +17,16 @@
 #include <chrono>
 #include <vector>
 #include <map>
+#include <thread>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <cstring>
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 using namespace ftxui;
 using namespace simdjson;
@@ -73,6 +83,168 @@ struct Config {
 };
 
 // ============================================================================
+// Communication Mode
+// ============================================================================
+enum class CommMode {
+  STANDALONE,  // Direct terminal interaction
+  IPC         // Communicating with Node.js wrapper via JSON-RPC
+};
+
+// ============================================================================
+// MCP Client - Manages connection to MCP server via Unix socket
+// ============================================================================
+class MCPClient {
+private:
+  std::string socket_path_;
+  int socket_fd_ = -1;
+  FILE* socket_file_ = nullptr;
+  std::thread reader_thread_;
+  bool running_ = false;
+
+public:
+  MCPClient(const std::string& socket_path) : socket_path_(socket_path) {}
+  
+  ~MCPClient() {
+    Stop();
+  }
+  
+  bool Connect() {
+    SPDLOG_INFO("Connecting to MCP server at {}", socket_path_);
+    
+    // Create Unix domain socket
+    socket_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (socket_fd_ < 0) {
+      SPDLOG_ERROR("Failed to create socket: {}", strerror(errno));
+      return false;
+    }
+    
+    // Set socket to non-blocking for connection timeout
+    int flags = fcntl(socket_fd_, F_GETFL, 0);
+    fcntl(socket_fd_, F_SETFL, flags | O_NONBLOCK);
+    
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+    
+    // Try to connect
+    int result = connect(socket_fd_, (struct sockaddr*)&addr, sizeof(addr));
+    if (result < 0 && errno != EINPROGRESS) {
+      SPDLOG_ERROR("Failed to connect to socket: {} ({})", strerror(errno), socket_path_);
+      close(socket_fd_);
+      socket_fd_ = -1;
+      return false;
+    }
+    
+    // Wait for connection with timeout
+    fd_set fdset;
+    struct timeval tv;
+    FD_ZERO(&fdset);
+    FD_SET(socket_fd_, &fdset);
+    tv.tv_sec = 2;  // 2 second timeout
+    tv.tv_usec = 0;
+    
+    result = select(socket_fd_ + 1, NULL, &fdset, NULL, &tv);
+    if (result <= 0) {
+      SPDLOG_ERROR("Connection timeout - MCP server not responding");
+      close(socket_fd_);
+      socket_fd_ = -1;
+      return false;
+    }
+    
+    // Check if connection succeeded
+    int error = 0;
+    socklen_t len = sizeof(error);
+    if (getsockopt(socket_fd_, SOL_SOCKET, SO_ERROR, &error, &len) < 0 || error != 0) {
+      SPDLOG_ERROR("Connection failed: {}", strerror(error));
+      close(socket_fd_);
+      socket_fd_ = -1;
+      return false;
+    }
+    
+    // Set back to blocking mode
+    fcntl(socket_fd_, F_SETFL, flags);
+    
+    // Create FILE* for line-based I/O
+    socket_file_ = fdopen(socket_fd_, "r+");
+    if (!socket_file_) {
+      SPDLOG_ERROR("Failed to create FILE stream");
+      close(socket_fd_);
+      socket_fd_ = -1;
+      return false;
+    }
+    
+    running_ = true;
+    
+    // Start reader thread
+    reader_thread_ = std::thread([this]() { ReadLoop(); });
+    
+    SPDLOG_INFO("Connected to MCP server");
+    return true;
+  }
+  
+  bool IsConnected() const {
+    return socket_fd_ >= 0 && running_;
+  }
+  
+  void Stop() {
+    running_ = false;
+    
+    if (socket_file_) {
+      fclose(socket_file_);
+      socket_file_ = nullptr;
+      socket_fd_ = -1;
+    } else if (socket_fd_ >= 0) {
+      close(socket_fd_);
+      socket_fd_ = -1;
+    }
+    
+    if (reader_thread_.joinable()) {
+      reader_thread_.join();
+    }
+  }
+  
+  void SendRequest(const std::string& json) {
+    if (!socket_file_) {
+      SPDLOG_ERROR("Cannot send request - not connected");
+      return;
+    }
+    
+    SPDLOG_INFO("Sending to MCP: {}", json);  // Changed to INFO level
+    int result = fprintf(socket_file_, "%s\n", json.c_str());
+    if (result < 0) {
+      SPDLOG_ERROR("Failed to write to socket: {}", strerror(errno));
+      return;
+    }
+    
+    result = fflush(socket_file_);
+    if (result != 0) {
+      SPDLOG_ERROR("Failed to flush socket: {}", strerror(errno));
+      return;
+    }
+    
+    SPDLOG_INFO("Request sent successfully, bytes written: {}", result);
+  }
+  
+private:
+  void ReadLoop() {
+    char buffer[4096];
+    while (running_ && socket_file_ && fgets(buffer, sizeof(buffer), socket_file_)) {
+      std::string line(buffer);
+      if (!line.empty() && line.back() == '\n') {
+        line.pop_back();
+      }
+      
+      SPDLOG_DEBUG("Received from MCP: {}", line);
+      
+      // TODO: Parse JSON-RPC responses and handle them
+      // For now, just log
+    }
+    SPDLOG_INFO("MCP reader thread exiting");
+  }
+};
+
+// ============================================================================
 // State Manager - Single source of truth for application state
 // ============================================================================
 class StateManager {
@@ -90,7 +262,9 @@ public:
     UNKNOWN_COMMAND,
     EXIT_WARNING,
     EXIT_MESSAGE,
-    DUMP_SUCCESS
+    DUMP_SUCCESS,
+    CHAT_NOT_IMPLEMENTED,
+    MCP_ERROR
   };
 
 private:
@@ -190,6 +364,9 @@ private:
   StateManager& state_;
   std::vector<Tool>& tools_;
   UIRenderer* renderer_ = nullptr;
+  CommMode comm_mode_ = CommMode::STANDALONE;
+  MCPClient* mcp_client_ = nullptr;
+  int message_id_ = 0;
   
   Tool* FindTool(const std::string& name) {
     for (auto& tool : tools_) {
@@ -209,33 +386,156 @@ public:
   void SetRenderer(UIRenderer* renderer) {
     renderer_ = renderer;
   }
+  
+  void SetCommMode(CommMode mode) {
+    comm_mode_ = mode;
+  }
+  
+  void SetMCPClient(MCPClient* client) {
+    mcp_client_ = client;
+  }
+  
+  void SendChatMessage(const std::string& message) {
+    SPDLOG_INFO("SendChatMessage called with: {}", message);
+    
+    if (comm_mode_ != CommMode::IPC) {
+      SPDLOG_WARN("Not in IPC mode, skipping");
+      return;
+    }
+    
+    if (!mcp_client_) {
+      SPDLOG_ERROR("MCP client is null!");
+      return;
+    }
+    
+    // Simple JSON construction for IPC
+    std::stringstream json;
+    json << "{\"type\":\"chat\",\"id\":" << ++message_id_ 
+         << ",\"content\":\"" << EscapeJSON(message) << "\"}";
+    
+    SPDLOG_INFO("Sending chat JSON: {}", json.str());
+    mcp_client_->SendRequest(json.str());
+  }
+  
+  void SendMCPRequest(const std::string& method, const std::string& params) {
+    if (comm_mode_ != CommMode::IPC || !mcp_client_) return;
+    
+    std::stringstream json;
+    json << "{\"jsonrpc\":\"2.0\",\"method\":\"" << method 
+         << "\",\"id\":" << ++message_id_;
+    if (!params.empty()) {
+      json << ",\"params\":" << params;
+    } else {
+      json << ",\"params\":{}";
+    }
+    json << "}";
+    
+    SPDLOG_INFO("Sending MCP request: {}", json.str());
+    mcp_client_->SendRequest(json.str());
+  }
+  
+  void SendToolCall(const std::string& toolName, const std::string& args) {
+    if (comm_mode_ != CommMode::IPC || !mcp_client_) return;
+    
+    std::stringstream json;
+    json << "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"id\":" << ++message_id_ 
+         << ",\"params\":{\"name\":\"" << EscapeJSON(toolName) << "\"";
+    if (!args.empty()) {
+      json << ",\"arguments\":" << args; // Assume args is already JSON
+    }
+    json << "}}";
+    
+    mcp_client_->SendRequest(json.str());
+  }
+  
+  std::string EscapeJSON(const std::string& str) {
+    std::string result;
+    for (char c : str) {
+      switch (c) {
+        case '"': result += "\\\""; break;
+        case '\\': result += "\\\\"; break;
+        case '\n': result += "\\n"; break;
+        case '\r': result += "\\r"; break;
+        case '\t': result += "\\t"; break;
+        default: result += c; break;
+      }
+    }
+    return result;
+  }
 
   void ProcessCommand(const std::string& command) {
     if (command.empty()) return;
     
-    SPDLOG_INFO("Processing command: '{}'", command);
+    SPDLOG_INFO("Processing command: '{}' (mode: {})", command, 
+                comm_mode_ == CommMode::IPC ? "IPC" : "STANDALONE");
     state_.AddToHistory(command);
     
-    if (command == "help") {
-      SPDLOG_DEBUG("Showing help");
-      state_.SetDisplayMode(StateManager::DisplayMode::HELP);
-    } else if (command == "list") {
-      SPDLOG_DEBUG("Showing tool list");
-      state_.SetDisplayMode(StateManager::DisplayMode::LIST);
-    } else if (command == "dump" || command == "screenshot") {
-      SPDLOG_DEBUG("Dump screen requested");
-      DumpScreen();
-    } else if (command == "exit" || command == "quit") {
-      SPDLOG_INFO("Exit command received");
-      state_.RequestExit();
-    } else {
-      Tool* tool = FindTool(command);
-      if (tool) {
-        SPDLOG_DEBUG("Found tool: {}", tool->name);
+    // Check if it's a slash command
+    if (command[0] == '/') {
+      std::string cmd = command.substr(1); // Remove the '/'
+      
+      if (cmd == "help" || cmd == "h") {
+        SPDLOG_DEBUG("Showing help");
+        state_.SetDisplayMode(StateManager::DisplayMode::HELP);
+      } else if (cmd == "tools") {
+        SPDLOG_DEBUG("Listing MCP tools");
+        if (comm_mode_ == CommMode::IPC) {
+          if (!mcp_client_ || !mcp_client_->IsConnected()) {
+            SPDLOG_ERROR("MCP server not connected");
+            state_.SetDisplayMode(StateManager::DisplayMode::MCP_ERROR);
+          } else {
+            SendMCPRequest("tools/list", "{}");
+            // For now, just show that we sent the request
+            state_.SetDisplayMode(StateManager::DisplayMode::HELP);
+          }
+        } else {
+          state_.SetDisplayMode(StateManager::DisplayMode::LIST);
+        }
+      } else if (cmd == "servers") {
+        SPDLOG_DEBUG("Showing connected servers");
+        // TODO: Show connected MCP servers
+        state_.SetDisplayMode(StateManager::DisplayMode::HELP);
+      } else if (cmd.substr(0, 4) == "use ") {
+        // Parse /use <tool> [args]
+        std::string toolCmd = cmd.substr(4);
+        size_t spacePos = toolCmd.find(' ');
+        std::string toolName = (spacePos != std::string::npos) 
+          ? toolCmd.substr(0, spacePos) 
+          : toolCmd;
+        std::string args = (spacePos != std::string::npos) 
+          ? toolCmd.substr(spacePos + 1) 
+          : "";
+        
+        SPDLOG_DEBUG("Executing MCP tool: {} with args: {}", toolName, args);
+        if (comm_mode_ == CommMode::IPC) {
+          SendToolCall(toolName, args);
+        } else {
+          state_.SetDisplayMode(StateManager::DisplayMode::CHAT_NOT_IMPLEMENTED);
+        }
+      } else if (cmd == "dump") {
+        SPDLOG_DEBUG("Dump screen requested");
+        DumpScreen();
+      } else if (cmd == "exit" || cmd == "quit" || cmd == "q") {
+        SPDLOG_INFO("Exit command received");
+        state_.RequestExit();
       } else {
-        SPDLOG_WARN("Unknown command: {}", command);
+        SPDLOG_WARN("Unknown command: /{}", cmd);
+        state_.SetDisplayMode(StateManager::DisplayMode::UNKNOWN_COMMAND);
       }
-      state_.SelectTool(tool);
+    } else {
+      // Non-slash commands go to chatbot
+      SPDLOG_INFO("Chatbot message: {}", command);
+      
+      if (comm_mode_ == CommMode::IPC) {
+        SPDLOG_INFO("Sending chat message to MCP server");
+        // Send to Node.js wrapper for processing
+        SendChatMessage(command);
+        state_.SetDisplayMode(StateManager::DisplayMode::HELP); // Stay on current screen
+      } else {
+        SPDLOG_INFO("In standalone mode - showing not implemented");
+        // Standalone mode - show not implemented
+        state_.SetDisplayMode(StateManager::DisplayMode::CHAT_NOT_IMPLEMENTED);
+      }
     }
   }
 
@@ -265,22 +565,33 @@ private:
 
   Elements RenderHelp() const {
     return {
-      text("▶ COMMANDS") | bold | color(Colors::kBrightGreen),
+      text("▶ CLI COMMANDS") | bold | color(Colors::kBrightGreen),
       text(""),
-      hbox(text("  help     ") | color(Colors::kCyan), 
+      hbox(text("  /help      ") | color(Colors::kCyan), 
            text("→ Show this help message") | color(Colors::kDimGreen)),
-      hbox(text("  list     ") | color(Colors::kCyan), 
-           text("→ List all available tools") | color(Colors::kDimGreen)),
-      hbox(text("  <tool>   ") | color(Colors::kCyan), 
-           text("→ Show detailed information about a specific tool") | color(Colors::kDimGreen)),
-      hbox(text("  dump     ") | color(Colors::kCyan), 
-           text("→ Save current screen to dump_[timestamp].txt") | color(Colors::kDimGreen)),
-      hbox(text("  exit     ") | color(Colors::kCyan), 
-           text("→ Exit the application") | color(Colors::kDimGreen)),
+      hbox(text("  /tools     ") | color(Colors::kCyan), 
+           text("→ List available MCP tools") | color(Colors::kDimGreen)),
+      hbox(text("  /servers   ") | color(Colors::kCyan), 
+           text("→ Show connected MCP servers") | color(Colors::kDimGreen)),
+      hbox(text("  /connect   ") | color(Colors::kCyan), 
+           text("→ Connect to an MCP server") | color(Colors::kDimGreen)),
+      hbox(text("  /dump      ") | color(Colors::kCyan), 
+           text("→ Save current screen to file") | color(Colors::kDimGreen)),
+      hbox(text("  /exit      ") | color(Colors::kCyan), 
+           text("→ Exit the application (alias: /q)") | color(Colors::kDimGreen)),
       text(""),
       separator() | color(Colors::kPurple),
       text(""),
-      text("Type 'list' to see all available tools or type a tool name directly.") | color(Colors::kGray)
+      text("▶ MCP TOOL USAGE") | bold | color(Colors::kBrightGreen),
+      text(""),
+      hbox(text("  /use <tool> [args]  ") | color(Colors::kCyan),
+           text("→ Execute an MCP tool") | color(Colors::kDimGreen)),
+      text(""),
+      separator() | color(Colors::kPurple),
+      text(""),
+      text("▶ CHAT MODE") | bold | color(Colors::kBrightGreen),
+      text(""),
+      text("Any text without a slash is sent to the AI assistant") | color(Colors::kGray)
     };
   }
 
@@ -349,13 +660,17 @@ public:
     // Main content based on state
     switch (state_.GetDisplayMode()) {
       case StateManager::DisplayMode::HELP:
-        ss << "▶ COMMANDS\n\n";
-        ss << "  help      → Show this help message\n";
-        ss << "  list      → List all available tools\n";
-        ss << "  <tool>    → Show detailed information about a specific tool\n";
-        ss << "  dump      → Save current screen to dump_[timestamp].txt\n";
-        ss << "  exit      → Exit the application\n\n";
-        ss << "Type 'list' to see all available tools or type a tool name directly.\n";
+        ss << "▶ CLI COMMANDS\n\n";
+        ss << "  /help      → Show this help message\n";
+        ss << "  /tools     → List available MCP tools\n";
+        ss << "  /servers   → Show connected MCP servers\n";
+        ss << "  /connect   → Connect to an MCP server\n";
+        ss << "  /dump      → Save current screen to file\n";
+        ss << "  /exit      → Exit the application (alias: /q)\n\n";
+        ss << "▶ MCP TOOL USAGE\n\n";
+        ss << "  /use <tool> [args]  → Execute an MCP tool\n\n";
+        ss << "▶ CHAT MODE\n\n";
+        ss << "Any text without a slash is sent to the AI assistant\n";
         break;
         
       case StateManager::DisplayMode::LIST:
@@ -400,7 +715,8 @@ public:
         break;
         
       case StateManager::DisplayMode::UNKNOWN_COMMAND:
-        ss << "⚠ Unknown command. Type 'help' for available commands.\n";
+        ss << "⚠ Unknown command. Commands must start with '/'\n";
+        ss << "Type /help for available commands\n";
         break;
         
       case StateManager::DisplayMode::EXIT_WARNING:
@@ -414,6 +730,24 @@ public:
       case StateManager::DisplayMode::DUMP_SUCCESS:
         ss << "✓ Screen dumped to file\n";
         break;
+        
+      case StateManager::DisplayMode::CHAT_NOT_IMPLEMENTED:
+        ss << "🤖 CHAT MODE\n\n";
+        ss << "The AI assistant feature is not implemented yet.\n";
+        ss << "For now, use slash commands to interact with tools.\n\n";
+        ss << "Type /help to see available commands.\n";
+        break;
+        
+      case StateManager::DisplayMode::MCP_ERROR:
+        ss << "⚠️ MCP CONNECTION ERROR\n\n";
+        ss << "Cannot connect to MCP server\n\n";
+        ss << "Possible causes:\n";
+        ss << "• MCP server failed to start\n";
+        ss << "• Socket connection timeout\n";
+        ss << "• Server crashed or was terminated\n\n";
+        ss << "Try running in standalone mode:\n";
+        ss << "  ./src/demo\n";
+        break;
     }
     
     // Footer info
@@ -421,9 +755,9 @@ public:
     if (state_.IsCtrlCPending()) {
       ss << "◉ Press Ctrl+C again to exit\n";
     } else if (!state_.GetHistory().empty()) {
-      ss << "◉ Last command: " << state_.GetHistory().back() << "\n";
+      ss << "◉ Last: " << state_.GetHistory().back() << "\n";
     } else {
-      ss << "◉ Type 'help' for commands • Ctrl+C twice to exit\n";
+      ss << "◉ Type /help for commands • Ctrl+C twice to exit\n";
     }
     
     return ss.str();
@@ -465,8 +799,10 @@ public:
         }
         break;
       case StateManager::DisplayMode::UNKNOWN_COMMAND:
-        main_content.push_back(text("⚠ Unknown command. Type 'help' for available commands.") 
+        main_content.push_back(text("⚠ Unknown command. Commands must start with '/'") 
                              | color(Colors::kHotPink));
+        main_content.push_back(text("Type /help for available commands") 
+                             | color(Colors::kGray));
         break;
       case StateManager::DisplayMode::EXIT_WARNING:
         main_content.push_back(text("⚠ Press Ctrl+C again to exit") 
@@ -480,6 +816,30 @@ public:
         main_content.push_back(text("✓ Screen dumped to file") 
                              | bold | color(Colors::kBrightGreen) | center);
         break;
+      case StateManager::DisplayMode::CHAT_NOT_IMPLEMENTED:
+        main_content.push_back(text("🤖 CHAT MODE") | bold | color(Colors::kPink));
+        main_content.push_back(text(""));
+        main_content.push_back(text("The AI assistant feature is not implemented yet.") 
+                             | color(Colors::kGray));
+        main_content.push_back(text("For now, use slash commands to interact with tools.") 
+                             | color(Colors::kGray));
+        main_content.push_back(text(""));
+        main_content.push_back(text("Type /help to see available commands.") 
+                             | color(Colors::kCyan));
+        break;
+      case StateManager::DisplayMode::MCP_ERROR:
+        main_content.push_back(text("⚠️ MCP CONNECTION ERROR") | bold | color(Colors::kHotPink));
+        main_content.push_back(text(""));
+        main_content.push_back(text("Cannot connect to MCP server") | color(Colors::kHotPink));
+        main_content.push_back(text(""));
+        main_content.push_back(text("Possible causes:") | color(Colors::kGray));
+        main_content.push_back(text("• MCP server failed to start") | color(Colors::kGray));
+        main_content.push_back(text("• Socket connection timeout") | color(Colors::kGray));
+        main_content.push_back(text("• Server crashed or was terminated") | color(Colors::kGray));
+        main_content.push_back(text(""));
+        main_content.push_back(text("Try running in standalone mode:") | color(Colors::kCyan));
+        main_content.push_back(text("  ./src/demo") | color(Colors::kGreen));
+        break;
     }
 
     auto content_area = vbox(main_content) | flex;
@@ -489,9 +849,9 @@ public:
     if (state_.IsCtrlCPending()) {
       ticker_text = "Press Ctrl+C again to exit";
     } else if (!state_.GetHistory().empty()) {
-      ticker_text = "Last command: " + state_.GetHistory().back();
+      ticker_text = "Last: " + state_.GetHistory().back();
     } else {
-      ticker_text = "Type 'help' for commands • Ctrl+C twice to exit";
+      ticker_text = "Type /help for commands • Ctrl+C twice to exit";
     }
     
     auto ticker = hbox({
@@ -545,12 +905,14 @@ private:
   StateManager state_;
   std::unique_ptr<UIRenderer> renderer_;
   std::unique_ptr<InputHandler> input_handler_;
+  std::unique_ptr<MCPClient> mcp_client_;
   
   ScreenInteractive screen_;
   Closure exit_closure_;
   
   std::string user_input_;
   Component input_component_;
+  CommMode comm_mode_ = CommMode::STANDALONE;
 
 public:
   Application() : screen_(ScreenInteractive::TerminalOutput()) {
@@ -572,6 +934,37 @@ public:
     
     // Create input component
     input_component_ = Input(&user_input_, config_.inputPlaceholder);
+  }
+
+  void SetCommMode(CommMode mode, const std::string& socket_path = "") {
+    comm_mode_ = mode;
+    input_handler_->SetCommMode(mode);
+    
+    // Connect to MCP server if socket path provided
+    if (mode == CommMode::IPC && !socket_path.empty()) {
+      SPDLOG_INFO("Attempting to connect to MCP server at: {}", socket_path);
+      
+      // Check if socket file exists
+      struct stat st;
+      if (stat(socket_path.c_str(), &st) != 0) {
+        SPDLOG_ERROR("Socket file does not exist: {}", socket_path);
+        SPDLOG_ERROR("MCP server may not have started properly");
+        comm_mode_ = CommMode::STANDALONE;
+        input_handler_->SetCommMode(CommMode::STANDALONE);
+        return;
+      }
+      
+      mcp_client_ = std::make_unique<MCPClient>(socket_path);
+      if (mcp_client_->Connect()) {
+        input_handler_->SetMCPClient(mcp_client_.get());
+        SPDLOG_INFO("MCP client connected successfully");
+      } else {
+        SPDLOG_ERROR("Failed to connect to MCP server at {}", socket_path);
+        mcp_client_.reset();
+        comm_mode_ = CommMode::STANDALONE;
+        input_handler_->SetCommMode(CommMode::STANDALONE);
+      }
+    }
   }
 
   void Run() {
@@ -606,8 +999,13 @@ public:
       
       // Handle Enter key
       if (event == Event::Return && !user_input_.empty()) {
-        input_handler_->ProcessCommand(user_input_);
+        SPDLOG_DEBUG("Enter pressed with input: {}", user_input_);
+        std::string command = user_input_;
         user_input_.clear();
+        
+        // Process command directly
+        input_handler_->ProcessCommand(command);
+        
         return true;
       }
       
@@ -751,12 +1149,38 @@ void SetupLogging() {
 // ============================================================================
 // Main
 // ============================================================================
-int main() {
+int main(int argc, char* argv[]) {
   SetupLogging();
+  
+  // Check for mode and socket path
+  CommMode mode = CommMode::STANDALONE;
+  std::string socket_path;
+  
+  for (int i = 1; i < argc; i++) {
+    if (std::string(argv[i]) == "--mcp-socket" && i + 1 < argc) {
+      mode = CommMode::IPC;
+      socket_path = argv[i + 1];
+      SPDLOG_INFO("Using MCP socket: {}", socket_path);
+      break;
+    }
+  }
+  
+  // Also check environment variable
+  if (mode == CommMode::STANDALONE) {
+    const char* env_socket = getenv("MCP_SOCKET");
+    if (env_socket) {
+      mode = CommMode::IPC;
+      socket_path = env_socket;
+      SPDLOG_INFO("Using MCP socket from env: {}", socket_path);
+    }
+  }
   
   try {
     SPDLOG_INFO("Creating application instance");
     Application app;
+    
+    // Set communication mode
+    app.SetCommMode(mode, socket_path);
     
     SPDLOG_INFO("Starting application main loop");
     app.Run();

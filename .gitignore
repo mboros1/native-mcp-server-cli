@@ -33,6 +33,10 @@ deps/spdlog/
 # Log files
 *.log
 logs/
+mcp-server-node.log
+mcp-server-error.log
+mcp-server-stdout.log
+mcp-server-stderr.log
 
 # Screen dumps
 dump_*.txt
