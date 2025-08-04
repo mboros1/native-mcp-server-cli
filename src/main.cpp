@@ -194,6 +194,16 @@ private:
 };
 
 // ============================================================================
+// Log Entry for conversation history
+// ============================================================================
+struct LogEntry {
+  enum Type { USER, SYSTEM, RESPONSE, ERROR };
+  Type type;
+  std::string content;
+  std::chrono::system_clock::time_point timestamp;
+};
+
+// ============================================================================
 // State Manager - Single source of truth for application state
 // ============================================================================
 class StateManager {
@@ -205,6 +215,7 @@ public:
   };
 
   enum class DisplayMode {
+    NORMAL,  // Normal chat/log view
     HELP,
     LIST,
     TOOL_INFO,
@@ -218,14 +229,16 @@ public:
 
 private:
   AppState app_state_ = AppState::RUNNING;
-  DisplayMode display_mode_ = DisplayMode::HELP;
+  DisplayMode display_mode_ = DisplayMode::NORMAL;
   
   std::chrono::steady_clock::time_point last_ctrl_c_time_;
   bool ctrl_c_pending_ = false;
   
   std::vector<std::string> command_history_;
+  std::vector<LogEntry> conversation_log_;
   Tool* selected_tool_ = nullptr;
   int max_history_size_ = 100;
+  int scroll_position_ = 0;
 
 public:
   // Clean interface for state transitions
@@ -303,6 +316,26 @@ public:
   
   const std::vector<std::string>& GetHistory() const { return command_history_; }
   void SetMaxHistorySize(int size) { max_history_size_ = size; }
+  
+  // Conversation log management
+  void AddLogEntry(LogEntry::Type type, const std::string& content) {
+    conversation_log_.push_back(LogEntry{
+      type, 
+      content, 
+      std::chrono::system_clock::now()
+    });
+    // Auto-scroll to bottom when new entry is added
+    scroll_position_ = std::max(0, static_cast<int>(conversation_log_.size()) - 10);
+  }
+  
+  const std::vector<LogEntry>& GetConversationLog() const { return conversation_log_; }
+  
+  void ClearConversationLog() { conversation_log_.clear(); }
+  
+  int GetScrollPosition() const { return scroll_position_; }
+  void SetScrollPosition(int pos) { 
+    scroll_position_ = std::max(0, std::min(pos, static_cast<int>(conversation_log_.size()) - 1));
+  }
 };
 
 // ============================================================================
@@ -419,31 +452,36 @@ public:
                 comm_mode_ == CommMode::IPC ? "IPC" : "STANDALONE");
     state_.AddToHistory(command);
     
+    // Add user input to log
+    state_.AddLogEntry(LogEntry::USER, command);
+    
     // Check if it's a slash command
     if (command[0] == '/') {
       std::string cmd = command.substr(1); // Remove the '/'
       
       if (cmd == "help" || cmd == "h") {
         SPDLOG_DEBUG("Showing help");
-        state_.SetDisplayMode(StateManager::DisplayMode::HELP);
+        state_.AddLogEntry(LogEntry::SYSTEM, "Available commands:\n/help - Show this help\n/tools - List available tools\n/servers - Show connected servers\n/exit - Exit the application");
       } else if (cmd == "tools") {
         SPDLOG_DEBUG("Listing MCP tools");
         if (comm_mode_ == CommMode::IPC) {
           if (!mcp_client_ || !mcp_client_->IsConnected()) {
             SPDLOG_ERROR("MCP server not connected");
-            state_.SetDisplayMode(StateManager::DisplayMode::MCP_ERROR);
+            state_.AddLogEntry(LogEntry::ERROR, "Cannot list tools: MCP server not connected");
           } else {
             SendMCPRequest("tools/list", "{}");
-            // For now, just show that we sent the request
-            state_.SetDisplayMode(StateManager::DisplayMode::HELP);
+            state_.AddLogEntry(LogEntry::SYSTEM, "Requesting tool list...");
           }
         } else {
-          state_.SetDisplayMode(StateManager::DisplayMode::LIST);
+          state_.AddLogEntry(LogEntry::SYSTEM, "No tools available in standalone mode");
         }
       } else if (cmd == "servers") {
         SPDLOG_DEBUG("Showing connected servers");
-        // TODO: Show connected MCP servers
-        state_.SetDisplayMode(StateManager::DisplayMode::HELP);
+        if (mcp_client_ && mcp_client_->IsConnected()) {
+          state_.AddLogEntry(LogEntry::SYSTEM, "Connected to TCP server at 127.0.0.1:4000");
+        } else {
+          state_.AddLogEntry(LogEntry::SYSTEM, "No servers connected");
+        }
       } else if (cmd.substr(0, 4) == "use ") {
         // Parse /use <tool> [args]
         std::string toolCmd = cmd.substr(4);
@@ -458,9 +496,13 @@ public:
         SPDLOG_DEBUG("Executing MCP tool: {} with args: {}", toolName, args);
         if (comm_mode_ == CommMode::IPC) {
           SendToolCall(toolName, args);
+          state_.AddLogEntry(LogEntry::SYSTEM, "Executing tool: " + toolName);
         } else {
-          state_.SetDisplayMode(StateManager::DisplayMode::CHAT_NOT_IMPLEMENTED);
+          state_.AddLogEntry(LogEntry::ERROR, "Tool execution not available in standalone mode");
         }
+      } else if (cmd == "clear") {
+        state_.ClearConversationLog();
+        state_.AddLogEntry(LogEntry::SYSTEM, "Conversation cleared");
       } else if (cmd == "dump") {
         SPDLOG_DEBUG("Dump screen requested");
         DumpScreen();
@@ -469,7 +511,7 @@ public:
         state_.RequestExit();
       } else {
         SPDLOG_WARN("Unknown command: /{}", cmd);
-        state_.SetDisplayMode(StateManager::DisplayMode::UNKNOWN_COMMAND);
+        state_.AddLogEntry(LogEntry::ERROR, "Unknown command: /" + cmd);
       }
     } else {
       // Non-slash commands go to chatbot
@@ -477,13 +519,11 @@ public:
       
       if (comm_mode_ == CommMode::IPC) {
         SPDLOG_INFO("Sending chat message to MCP server");
-        // Send to Node.js wrapper for processing
         SendChatMessage(command);
-        state_.SetDisplayMode(StateManager::DisplayMode::HELP); // Stay on current screen
+        state_.AddLogEntry(LogEntry::SYSTEM, "[Awaiting response...]");
       } else {
         SPDLOG_INFO("In standalone mode - showing not implemented");
-        // Standalone mode - show not implemented
-        state_.SetDisplayMode(StateManager::DisplayMode::CHAT_NOT_IMPLEMENTED);
+        state_.AddLogEntry(LogEntry::RESPONSE, "Chat functionality requires connection to MCP server");
       }
     }
   }
@@ -703,6 +743,10 @@ public:
         ss << "Try running in standalone mode:\n";
         ss << "  ./src/demo\n";
         break;
+        
+      case StateManager::DisplayMode::NORMAL:
+        // Normal mode doesn't need special display in GetScreenText
+        break;
     }
     
     // Footer info
@@ -718,6 +762,70 @@ public:
     return ss.str();
   }
 
+  Element RenderConversationLog() const {
+    Elements log_lines;
+    const auto& log = state_.GetConversationLog();
+    
+    for (const auto& entry : log) {
+      Element line;
+      
+      // Format timestamp
+      auto time_t = std::chrono::system_clock::to_time_t(entry.timestamp);
+      char time_str[20];
+      std::strftime(time_str, sizeof(time_str), "%H:%M:%S", std::localtime(&time_t));
+      
+      switch (entry.type) {
+        case LogEntry::USER:
+          line = hbox({
+            text("[") | color(Colors::kGray),
+            text(time_str) | color(Colors::kGray),
+            text("] ") | color(Colors::kGray),
+            text("You: ") | bold | color(Colors::kCyan),
+            text(entry.content) | color(Colors::kGreen)
+          });
+          break;
+        case LogEntry::SYSTEM:
+          line = hbox({
+            text("[") | color(Colors::kGray),
+            text(time_str) | color(Colors::kGray),
+            text("] ") | color(Colors::kGray),
+            text("System: ") | bold | color(Colors::kPurple),
+            text(entry.content) | color(Colors::kDimGreen)
+          });
+          break;
+        case LogEntry::RESPONSE:
+          line = hbox({
+            text("[") | color(Colors::kGray),
+            text(time_str) | color(Colors::kGray),
+            text("] ") | color(Colors::kGray),
+            text("Assistant: ") | bold | color(Colors::kPink),
+            text(entry.content) | color(Colors::kGray)
+          });
+          break;
+        case LogEntry::ERROR:
+          line = hbox({
+            text("[") | color(Colors::kGray),
+            text(time_str) | color(Colors::kGray),
+            text("] ") | color(Colors::kGray),
+            text("Error: ") | bold | color(Colors::kHotPink),
+            text(entry.content) | color(Colors::kHotPink)
+          });
+          break;
+      }
+      
+      log_lines.push_back(line);
+    }
+    
+    if (log_lines.empty()) {
+      log_lines.push_back(
+        text("Welcome! Type a message or use /help for available commands.") 
+        | color(Colors::kGray) | center
+      );
+    }
+    
+    return vbox(std::move(log_lines));
+  }
+  
   Element Render() const {
     // Exit immediately if we're exiting
     if (state_.IsExiting()) {
@@ -728,110 +836,26 @@ public:
 
     // Connection status
     auto connection_status = hbox({
-      text("[Connection: ") | color(Colors::kGray),
-      text(is_connected_ ? "✓" : "✗") | color(is_connected_ ? Colors::kGreen : Colors::kHotPink),
-      text("]") | color(Colors::kGray)
+      text(is_connected_ ? "●" : "○") | color(is_connected_ ? Colors::kGreen : Colors::kHotPink),
+      text(" ") | color(Colors::kGray),
+      text(is_connected_ ? "Connected" : "Disconnected") | color(Colors::kGray)
     });
     
-    // Header
-    auto header = vbox({
-      text(""),
-      hbox(
-        text("▓▒░ ") | color(Colors::kPurple),
-        text(config_.welcomeMessage) | bold | color(Colors::kBrightGreen),
-        text(" ░▒▓") | color(Colors::kPurple)
-      ) | center,
-      hbox(
-        text(config_.serverName + " v" + config_.serverVersion) | color(Colors::kGray),
-        text("  "),
-        connection_status
-      ) | center,
-      text(""),
-      separator() | color(Colors::kPurple),
-    });
+    // Header - fixed height
+    auto header = hbox({
+      text(" ") | color(Colors::kPurple),
+      text(config_.welcomeMessage) | bold | color(Colors::kBrightGreen),
+      filler(),
+      connection_status,
+      text(" ") | color(Colors::kPurple)
+    }) | border | color(Colors::kPurple);
 
-    // Main content based on state
-    Elements main_content;
-    switch (state_.GetDisplayMode()) {
-      case StateManager::DisplayMode::HELP:
-        main_content = RenderHelp();
-        break;
-      case StateManager::DisplayMode::LIST:
-        main_content = RenderToolList();
-        break;
-      case StateManager::DisplayMode::TOOL_INFO:
-        if (auto* tool = state_.GetSelectedTool()) {
-          main_content = RenderToolInfo(*tool);
-        }
-        break;
-      case StateManager::DisplayMode::UNKNOWN_COMMAND:
-        main_content.push_back(text("⚠ Unknown command. Commands must start with '/'") 
-                             | color(Colors::kHotPink));
-        main_content.push_back(text("Type /help for available commands") 
-                             | color(Colors::kGray));
-        break;
-      case StateManager::DisplayMode::EXIT_WARNING:
-        main_content.push_back(text("⚠ Press Ctrl+C again to exit") 
-                             | bold | color(Colors::kHotPink) | center);
-        break;
-      case StateManager::DisplayMode::EXIT_MESSAGE:
-        main_content.push_back(text("◆ SEE YOU IN THE CYBER WORLD ◆") 
-                             | bold | color(Colors::kBrightGreen) | center);
-        break;
-      case StateManager::DisplayMode::DUMP_SUCCESS:
-        main_content.push_back(text("✓ Screen dumped to file") 
-                             | bold | color(Colors::kBrightGreen) | center);
-        break;
-      case StateManager::DisplayMode::CHAT_NOT_IMPLEMENTED:
-        main_content.push_back(text("🤖 CHAT MODE") | bold | color(Colors::kPink));
-        main_content.push_back(text(""));
-        main_content.push_back(text("The AI assistant feature is not implemented yet.") 
-                             | color(Colors::kGray));
-        main_content.push_back(text("For now, use slash commands to interact with tools.") 
-                             | color(Colors::kGray));
-        main_content.push_back(text(""));
-        main_content.push_back(text("Type /help to see available commands.") 
-                             | color(Colors::kCyan));
-        break;
-      case StateManager::DisplayMode::MCP_ERROR:
-        main_content.push_back(text("⚠️ MCP CONNECTION ERROR") | bold | color(Colors::kHotPink));
-        main_content.push_back(text(""));
-        main_content.push_back(text("Cannot connect to MCP server") | color(Colors::kHotPink));
-        main_content.push_back(text(""));
-        main_content.push_back(text("Possible causes:") | color(Colors::kGray));
-        main_content.push_back(text("• MCP server failed to start") | color(Colors::kGray));
-        main_content.push_back(text("• Socket connection timeout") | color(Colors::kGray));
-        main_content.push_back(text("• Server crashed or was terminated") | color(Colors::kGray));
-        main_content.push_back(text(""));
-        main_content.push_back(text("Try running in standalone mode:") | color(Colors::kCyan));
-        main_content.push_back(text("  ./src/demo") | color(Colors::kGreen));
-        break;
-    }
-
-    auto content_area = vbox(main_content) | flex;
-
-    // Info ticker
-    std::string ticker_text;
-    if (state_.IsCtrlCPending()) {
-      ticker_text = "Press Ctrl+C again to exit";
-    } else if (!state_.GetHistory().empty()) {
-      ticker_text = "Last: " + state_.GetHistory().back();
-    } else {
-      ticker_text = "Type /help for commands • Ctrl+C twice to exit";
-    }
+    // Middle content - scrollable conversation log
+    auto content = RenderConversationLog();
     
-    auto ticker = hbox({
-      text(" ◉ ") | color(Colors::kCyan),
-      text(ticker_text) | color(Colors::kGray),
-    }) | center;
-
     return vbox({
-      header,
-      content_area,
-      separator() | color(Colors::kPurple),
-      text(""),
-      ticker,
-      text(""),
+      header | size(HEIGHT, EQUAL, 3),
+      content | flex | frame | focusPositionRelative(0, 1) | vscroll_indicator,
     }) | bgcolor(Colors::kBackground);
   }
 };
@@ -881,7 +905,7 @@ private:
   CommMode comm_mode_ = CommMode::STANDALONE;
 
 public:
-  Application() : screen_(ScreenInteractive::TerminalOutput()) {
+  Application() : screen_(ScreenInteractive::Fullscreen()) {
     // Clear screen on startup
     std::cout << "\033[2J\033[H" << std::flush;
     
@@ -919,30 +943,98 @@ public:
   }
 
   void Run() {
-    // Create main UI component
-    auto main_component = Renderer(input_component_, [this] {
+    int scroll_position = 0;
+    
+    // Create scrollable middle area
+    auto middle_renderer = Renderer([this, &scroll_position] {
       // Update connection status
       if (mcp_client_) {
         renderer_->SetConnectionStatus(mcp_client_->IsConnected());
       }
+      
+      // Get conversation log
+      auto log_content = renderer_->RenderConversationLog();
+      
+      // Apply scroll position
+      return log_content 
+        | frame 
+        | focusPosition(0, scroll_position)
+        | vscroll_indicator 
+        | flex;
+    });
+    
+    // Catch events for scrolling
+    auto middle = CatchEvent(middle_renderer, [this, &scroll_position](Event event) {
+      const auto& log = state_.GetConversationLog();
+      int max_scroll = std::max(0, static_cast<int>(log.size()) - 10);
+      
+      if (event == Event::ArrowUp || event == Event::PageUp) {
+        scroll_position = std::max(0, scroll_position - 1);
+        return true;
+      }
+      if (event == Event::ArrowDown || event == Event::PageDown) {
+        scroll_position = std::min(max_scroll, scroll_position + 1);
+        return true;
+      }
+      if (event == Event::Home) {
+        scroll_position = 0;
+        return true;
+      }
+      if (event == Event::End) {
+        scroll_position = max_scroll;
+        return true;
+      }
+      return false;
+    });
+    
+    // Create header
+    auto header = Renderer([this] {
+      auto connection_status = hbox({
+        text(mcp_client_ && mcp_client_->IsConnected() ? "●" : "○") 
+          | color(mcp_client_ && mcp_client_->IsConnected() ? Colors::kGreen : Colors::kHotPink),
+        text(" ") | color(Colors::kGray),
+        text(mcp_client_ && mcp_client_->IsConnected() ? "Connected" : "Disconnected") 
+          | color(Colors::kGray)
+      });
+      
+      return hbox({
+        text(" ") | color(Colors::kPurple),
+        text(config_.welcomeMessage) | bold | color(Colors::kBrightGreen),
+        filler(),
+        connection_status,
+        text(" ") | color(Colors::kPurple)
+      }) | border | color(Colors::kPurple);
+    });
+    
+    // Create vertical layout
+    auto layout = Container::Vertical({
+      header,
+      middle,
+      input_component_
+    });
+    
+    // Final renderer that composes everything
+    auto main_component = Renderer(layout, [this, &header, &middle, &scroll_position] {
       // Check exit condition
       if (state_.IsExitRequested()) {
         state_.ConfirmExit();
         screen_.Post([this] { exit_closure_(); });
       }
       
-      // Render UI
-      auto ui = renderer_->Render();
+      // Auto-scroll to bottom on new messages
+      const auto& log = state_.GetConversationLog();
+      if (!log.empty()) {
+        scroll_position = std::max(0, static_cast<int>(log.size()) - 10);
+      }
       
-      // Add input
-      auto input_section = vbox({
-        hbox(
-          text("▶ ") | color(Colors::kHotPink),
+      return vbox({
+        header->Render() | size(HEIGHT, EQUAL, 3),
+        middle->Render() | flex,
+        hbox({
+          text(" ▶ ") | color(Colors::kHotPink),
           input_component_->Render() | color(Colors::kGreen)
-        )
-      });
-      
-      return vbox({ui, input_section}) | border | borderDouble | color(Colors::kPurple);
+        }) | size(HEIGHT, EQUAL, 1)
+      }) | bgcolor(Colors::kBackground);
     });
 
     // Handle events
