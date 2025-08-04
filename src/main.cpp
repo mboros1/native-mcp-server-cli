@@ -5,6 +5,10 @@
 #include <spdlog/fmt/fmt.h>
 #include <spdlog/fmt/chrono.h>
 
+#include "concurrent_queue.hpp"
+#include "event.hpp"
+#include "tcp_client.hpp"
+
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -91,156 +95,101 @@ enum class CommMode {
 };
 
 // ============================================================================
-// MCP Client - Manages connection to MCP server via Unix socket
+// MCP Client - Manages connection to MCP server via TCP
 // ============================================================================
 class MCPClient {
 private:
-  std::string socket_path_;
-  int socket_fd_ = -1;
-  FILE* socket_file_ = nullptr;
-  std::thread reader_thread_;
+  ConcurrentQueue<AppEvent> event_queue_;
+  std::unique_ptr<TcpClient> tcp_client_;
+  std::thread event_processor_thread_;
   bool running_ = false;
+  std::string host_;
+  int port_;
 
 public:
-  MCPClient(const std::string& socket_path) : socket_path_(socket_path) {}
+  MCPClient(const std::string& host = "127.0.0.1", int port = 4000) 
+    : host_(host), port_(port) {}
   
   ~MCPClient() {
     Stop();
   }
   
   bool Connect() {
-    SPDLOG_INFO("Connecting to MCP server at {}", socket_path_);
+    SPDLOG_INFO("Connecting to TCP server at {}:{}", host_, port_);
     
-    // Create Unix domain socket
-    socket_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (socket_fd_ < 0) {
-      SPDLOG_ERROR("Failed to create socket: {}", strerror(errno));
-      return false;
-    }
+    tcp_client_ = std::make_unique<TcpClient>(event_queue_);
     
-    // Set socket to non-blocking for connection timeout
-    int flags = fcntl(socket_fd_, F_GETFL, 0);
-    fcntl(socket_fd_, F_SETFL, flags | O_NONBLOCK);
-    
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
-    
-    // Try to connect
-    int result = connect(socket_fd_, (struct sockaddr*)&addr, sizeof(addr));
-    if (result < 0 && errno != EINPROGRESS) {
-      SPDLOG_ERROR("Failed to connect to socket: {} ({})", strerror(errno), socket_path_);
-      close(socket_fd_);
-      socket_fd_ = -1;
-      return false;
-    }
-    
-    // Wait for connection with timeout
-    fd_set fdset;
-    struct timeval tv;
-    FD_ZERO(&fdset);
-    FD_SET(socket_fd_, &fdset);
-    tv.tv_sec = 2;  // 2 second timeout
-    tv.tv_usec = 0;
-    
-    result = select(socket_fd_ + 1, NULL, &fdset, NULL, &tv);
-    if (result <= 0) {
-      SPDLOG_ERROR("Connection timeout - MCP server not responding");
-      close(socket_fd_);
-      socket_fd_ = -1;
-      return false;
-    }
-    
-    // Check if connection succeeded
-    int error = 0;
-    socklen_t len = sizeof(error);
-    if (getsockopt(socket_fd_, SOL_SOCKET, SO_ERROR, &error, &len) < 0 || error != 0) {
-      SPDLOG_ERROR("Connection failed: {}", strerror(error));
-      close(socket_fd_);
-      socket_fd_ = -1;
-      return false;
-    }
-    
-    // Set back to blocking mode
-    fcntl(socket_fd_, F_SETFL, flags);
-    
-    // Create FILE* for line-based I/O
-    socket_file_ = fdopen(socket_fd_, "r+");
-    if (!socket_file_) {
-      SPDLOG_ERROR("Failed to create FILE stream");
-      close(socket_fd_);
-      socket_fd_ = -1;
-      return false;
-    }
-    
+    // Start event processor thread before attempting connection
     running_ = true;
+    event_processor_thread_ = std::thread([this]() { ProcessEvents(); });
     
-    // Start reader thread
-    reader_thread_ = std::thread([this]() { ReadLoop(); });
+    // Start TCP client connection attempts
+    tcp_client_->start(host_, port_);
     
-    SPDLOG_INFO("Connected to MCP server");
-    return true;
+    // Wait a bit to see if initial connection succeeds
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    
+    if (tcp_client_->is_connected()) {
+      SPDLOG_INFO("Connected to TCP server");
+      return true;
+    } else {
+      SPDLOG_WARN("Initial connection failed, will keep retrying in background");
+      return false;
+    }
   }
   
   bool IsConnected() const {
-    return socket_fd_ >= 0 && running_;
+    return tcp_client_ && tcp_client_->is_connected();
   }
   
   void Stop() {
+    SPDLOG_INFO("Stopping MCP Server");
     running_ = false;
     
-    if (socket_file_) {
-      fclose(socket_file_);
-      socket_file_ = nullptr;
-      socket_fd_ = -1;
-    } else if (socket_fd_ >= 0) {
-      close(socket_fd_);
-      socket_fd_ = -1;
+    if (tcp_client_) {
+      tcp_client_->stop();
     }
     
-    if (reader_thread_.joinable()) {
-      reader_thread_.join();
+    if (event_processor_thread_.joinable()) {
+      event_processor_thread_.join();
     }
   }
   
   void SendRequest(const std::string& json) {
-    if (!socket_file_) {
+    if (!tcp_client_ || !tcp_client_->is_connected()) {
       SPDLOG_ERROR("Cannot send request - not connected");
       return;
     }
     
-    SPDLOG_INFO("Sending to MCP: {}", json);  // Changed to INFO level
-    int result = fprintf(socket_file_, "%s\n", json.c_str());
-    if (result < 0) {
-      SPDLOG_ERROR("Failed to write to socket: {}", strerror(errno));
-      return;
-    }
-    
-    result = fflush(socket_file_);
-    if (result != 0) {
-      SPDLOG_ERROR("Failed to flush socket: {}", strerror(errno));
-      return;
-    }
-    
-    SPDLOG_INFO("Request sent successfully, bytes written: {}", result);
+    SPDLOG_INFO("Sending to server: {}", json);
+    tcp_client_->send_message(json);
   }
   
 private:
-  void ReadLoop() {
-    char buffer[4096];
-    while (running_ && socket_file_ && fgets(buffer, sizeof(buffer), socket_file_)) {
-      std::string line(buffer);
-      if (!line.empty() && line.back() == '\n') {
-        line.pop_back();
+  void ProcessEvents() {
+    while (running_) {
+      AppEvent event;
+      if (event_queue_.pop(event, std::chrono::milliseconds(100))) {
+        switch (event.type) {
+          case EventType::Connected:
+            SPDLOG_INFO("TCP connection established: {}", event.data);
+            break;
+          case EventType::ConnectionFailed:
+            SPDLOG_WARN("TCP connection failed: {}", event.data);
+            break;
+          case EventType::ConnectionLost:
+            SPDLOG_WARN("TCP connection lost: {}", event.data);
+            break;
+          case EventType::MessageReceived:
+            SPDLOG_DEBUG("Received from server: {}", event.data);
+            // TODO: Parse JSON and handle responses
+            break;
+          default:
+            break;
+        }
       }
-      
-      SPDLOG_DEBUG("Received from MCP: {}", line);
-      
-      // TODO: Parse JSON-RPC responses and handle them
-      // For now, just log
     }
-    SPDLOG_INFO("MCP reader thread exiting");
+    SPDLOG_INFO("Event processor thread exiting");
   }
 };
 
@@ -562,6 +511,7 @@ private:
   const Config& config_;
   const StateManager& state_;
   const std::vector<Tool>& tools_;
+  bool is_connected_ = false;
 
   Elements RenderHelp() const {
     return {
@@ -648,13 +598,18 @@ private:
 public:
   UIRenderer(const Config& config, const StateManager& state, const std::vector<Tool>& tools)
     : config_(config), state_(state), tools_(tools) {}
+    
+  void SetConnectionStatus(bool connected) {
+    is_connected_ = connected;
+  }
 
   std::string GetScreenText() const {
     std::stringstream ss;
     
     // Header
     ss << config_.welcomeMessage << "\n";
-    ss << config_.serverName << " v" << config_.serverVersion << "\n";
+    ss << config_.serverName << " v" << config_.serverVersion;
+    ss << "  [Connection: " << (is_connected_ ? "✓" : "✗") << "]\n";
     ss << "================================================================================\n\n";
     
     // Main content based on state
@@ -771,6 +726,13 @@ public:
       }) | bgcolor(Colors::kBackground);
     }
 
+    // Connection status
+    auto connection_status = hbox({
+      text("[Connection: ") | color(Colors::kGray),
+      text(is_connected_ ? "✓" : "✗") | color(is_connected_ ? Colors::kGreen : Colors::kHotPink),
+      text("]") | color(Colors::kGray)
+    });
+    
     // Header
     auto header = vbox({
       text(""),
@@ -779,7 +741,11 @@ public:
         text(config_.welcomeMessage) | bold | color(Colors::kBrightGreen),
         text(" ░▒▓") | color(Colors::kPurple)
       ) | center,
-      text(config_.serverName + " v" + config_.serverVersion) | color(Colors::kGray) | center,
+      hbox(
+        text(config_.serverName + " v" + config_.serverVersion) | color(Colors::kGray),
+        text("  "),
+        connection_status
+      ) | center,
       text(""),
       separator() | color(Colors::kPurple),
     });
@@ -920,7 +886,7 @@ public:
     std::cout << "\033[2J\033[H" << std::flush;
     
     // Load configuration
-    LoadConfig("../config.json");
+    LoadConfig("./config.json");
     
     // Initialize components
     state_.SetMaxHistorySize(config_.maxHistorySize);
@@ -936,33 +902,18 @@ public:
     input_component_ = Input(&user_input_, config_.inputPlaceholder);
   }
 
-  void SetCommMode(CommMode mode, const std::string& socket_path = "") {
+  void SetCommMode(CommMode mode, const std::string& host = "127.0.0.1", int port = 4000) {
     comm_mode_ = mode;
     input_handler_->SetCommMode(mode);
     
-    // Connect to MCP server if socket path provided
-    if (mode == CommMode::IPC && !socket_path.empty()) {
-      SPDLOG_INFO("Attempting to connect to MCP server at: {}", socket_path);
+    // Connect to TCP server if in IPC mode
+    if (mode == CommMode::IPC) {
+      SPDLOG_INFO("Attempting to connect to TCP server at: {}:{}", host, port);
       
-      // Check if socket file exists
-      struct stat st;
-      if (stat(socket_path.c_str(), &st) != 0) {
-        SPDLOG_ERROR("Socket file does not exist: {}", socket_path);
-        SPDLOG_ERROR("MCP server may not have started properly");
-        comm_mode_ = CommMode::STANDALONE;
-        input_handler_->SetCommMode(CommMode::STANDALONE);
-        return;
-      }
-      
-      mcp_client_ = std::make_unique<MCPClient>(socket_path);
+      mcp_client_ = std::make_unique<MCPClient>(host, port);
       if (mcp_client_->Connect()) {
         input_handler_->SetMCPClient(mcp_client_.get());
-        SPDLOG_INFO("MCP client connected successfully");
-      } else {
-        SPDLOG_ERROR("Failed to connect to MCP server at {}", socket_path);
-        mcp_client_.reset();
-        comm_mode_ = CommMode::STANDALONE;
-        input_handler_->SetCommMode(CommMode::STANDALONE);
+        SPDLOG_INFO("TCP client connected successfully");
       }
     }
   }
@@ -970,6 +921,10 @@ public:
   void Run() {
     // Create main UI component
     auto main_component = Renderer(input_component_, [this] {
+      // Update connection status
+      if (mcp_client_) {
+        renderer_->SetConnectionStatus(mcp_client_->IsConnected());
+      }
       // Check exit condition
       if (state_.IsExitRequested()) {
         state_.ConfirmExit();
@@ -1022,7 +977,6 @@ private:
     std::ifstream file(filepath);
     if (!file.is_open()) {
       SPDLOG_WARN("Config file not found at {}, using defaults", filepath);
-      std::cerr << "Warning: Config file not found at " << filepath << ", using defaults\n";
       return;
     }
     
@@ -1036,7 +990,6 @@ private:
     auto error = parser.parse(json_str).get(doc);
     if (error) {
       SPDLOG_ERROR("Failed to parse config file: {}", error_message(error));
-      std::cerr << "Warning: Failed to parse config file: " << error << ", using defaults\n";
       return;
     }
     
@@ -1111,7 +1064,6 @@ private:
       }
     } catch (const std::exception& e) {
       SPDLOG_ERROR("Error reading config values: {}", e.what());
-      std::cerr << "Warning: Error reading config values: " << e.what() << "\n";
     }
   }
 };
@@ -1121,17 +1073,12 @@ private:
 // ============================================================================
 void SetupLogging() {
   try {
-    // Create console sink for debugging (won't interfere with TUI)
-    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    console_sink->set_level(spdlog::level::warn); // Only warnings and errors to console
-    
-    // Create file sink
-    auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("mcp-server.log", true);
+    // Create file sink only - no console output
+    auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("cli.log", true);
     file_sink->set_level(spdlog::level::trace); // Everything to file
     
-    // Create multi-sink logger
-    std::vector<spdlog::sink_ptr> sinks {console_sink, file_sink};
-    auto logger = std::make_shared<spdlog::logger>("mcp", sinks.begin(), sinks.end());
+    // Create logger with file sink only
+    auto logger = std::make_shared<spdlog::logger>("mcp", file_sink);
     
     // Set pattern with file location info
     logger->set_pattern("%Y-%m-%d %H:%M:%S.%e [%^%l%$] [%s:%#] %! › %v");
@@ -1152,27 +1099,32 @@ void SetupLogging() {
 int main(int argc, char* argv[]) {
   SetupLogging();
   
-  // Check for mode and socket path
-  CommMode mode = CommMode::STANDALONE;
-  std::string socket_path;
+  // Check for mode and TCP connection info
+  CommMode mode = CommMode::IPC;  // Default to IPC mode with TCP
+  std::string host = "127.0.0.1";
+  int port = 4000;
   
   for (int i = 1; i < argc; i++) {
-    if (std::string(argv[i]) == "--mcp-socket" && i + 1 < argc) {
-      mode = CommMode::IPC;
-      socket_path = argv[i + 1];
-      SPDLOG_INFO("Using MCP socket: {}", socket_path);
-      break;
+    if (std::string(argv[i]) == "--standalone") {
+      mode = CommMode::STANDALONE;
+      SPDLOG_INFO("Running in standalone mode");
+    } else if (std::string(argv[i]) == "--host" && i + 1 < argc) {
+      host = argv[i + 1];
+      i++;
+    } else if (std::string(argv[i]) == "--port" && i + 1 < argc) {
+      port = std::stoi(argv[i + 1]);
+      i++;
     }
   }
   
-  // Also check environment variable
-  if (mode == CommMode::STANDALONE) {
-    const char* env_socket = getenv("MCP_SOCKET");
-    if (env_socket) {
-      mode = CommMode::IPC;
-      socket_path = env_socket;
-      SPDLOG_INFO("Using MCP socket from env: {}", socket_path);
-    }
+  // Also check environment variables
+  const char* env_host = getenv("MCP_HOST");
+  if (env_host) {
+    host = env_host;
+  }
+  const char* env_port = getenv("MCP_PORT");
+  if (env_port) {
+    port = std::stoi(env_port);
   }
   
   try {
@@ -1180,7 +1132,7 @@ int main(int argc, char* argv[]) {
     Application app;
     
     // Set communication mode
-    app.SetCommMode(mode, socket_path);
+    app.SetCommMode(mode, host, port);
     
     SPDLOG_INFO("Starting application main loop");
     app.Run();
@@ -1188,7 +1140,6 @@ int main(int argc, char* argv[]) {
     SPDLOG_INFO("Application exited normally");
   } catch (const std::exception& e) {
     SPDLOG_ERROR("Fatal error: {}", e.what());
-    std::cerr << "Error: " << e.what() << "\n";
     return 1;
   }
   
