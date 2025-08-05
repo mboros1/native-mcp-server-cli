@@ -13,6 +13,7 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/component/event.hpp>
+#include <ftxui/screen/terminal.hpp>
 #include <simdjson.h>
 #include <json_struct.h>
 #include <token_est.h>
@@ -1822,43 +1823,62 @@ public:
         char time_str[20];
         std::strftime(time_str, sizeof(time_str), "%H:%M:%S", std::localtime(&time_t));
         
+        // Get terminal width and calculate content width
+        int terminal_width = Terminal::Size().dimx;
+        
         switch (entry.type) {
-          case LogEntryType::USER:
+          case LogEntryType::USER: {
+            // "[HH:MM:SS] You: " = 1 + 8 + 2 + 5 = 16 chars + 3 scroll bar + 5 gutter = 24
+            int prefix_width = 24;
+            int content_width = terminal_width - prefix_width;
             line = hbox({
               text("[") | color(Colors::kGray),
               text(time_str) | color(Colors::kGray),
               text("] ") | color(Colors::kGray),
               text("You: ") | bold | color(Colors::kCyan),
-              paragraph(entry.content) | color(Colors::kGreen)
+              paragraph(entry.content) | color(Colors::kGreen) | size(WIDTH, LESS_THAN, content_width)
             });
             break;
-          case LogEntryType::SYSTEM:
+          }
+          case LogEntryType::SYSTEM: {
+            // "[HH:MM:SS] System: " = 1 + 8 + 2 + 8 = 19 chars + 3 scroll bar + 5 gutter = 27
+            int prefix_width = 27;
+            int content_width = terminal_width - prefix_width;
             line = hbox({
               text("[") | color(Colors::kGray),
               text(time_str) | color(Colors::kGray),
               text("] ") | color(Colors::kGray),
               text("System: ") | bold | color(Colors::kPurple),
-              paragraph(entry.content) | color(Colors::kDimGreen)
+              paragraph(entry.content) | color(Colors::kDimGreen) | size(WIDTH, LESS_THAN, content_width)
             });
             break;
-          case LogEntryType::RESPONSE:
+          }
+          case LogEntryType::RESPONSE: {
+            // "[HH:MM:SS] Assistant: " = 1 + 8 + 2 + 11 = 22 chars + 3 scroll bar + 5 gutter = 30
+            int prefix_width = 30;
+            int content_width = terminal_width - prefix_width;
             line = hbox({
               text("[") | color(Colors::kGray),
               text(time_str) | color(Colors::kGray),
               text("] ") | color(Colors::kGray),
               text("Assistant: ") | bold | color(Colors::kPink),
-              paragraph(entry.content) | color(Colors::kGray)
+              paragraph(entry.content) | color(Colors::kGray) | size(WIDTH, LESS_THAN, content_width)
             });
             break;
-          case LogEntryType::ERROR:
+          }
+          case LogEntryType::ERROR: {
+            // "[HH:MM:SS] Error: " = 1 + 8 + 2 + 7 = 18 chars + 3 scroll bar + 5 gutter = 26
+            int prefix_width = 26;
+            int content_width = terminal_width - prefix_width;
             line = hbox({
               text("[") | color(Colors::kGray),
               text(time_str) | color(Colors::kGray),
               text("] ") | color(Colors::kGray),
               text("Error: ") | bold | color(Colors::kHotPink),
-              paragraph(entry.content) | color(Colors::kHotPink)
+              paragraph(entry.content) | color(Colors::kHotPink) | size(WIDTH, LESS_THAN, content_width)
             });
             break;
+          }
         }
         
         log_elements.push_back(line);
