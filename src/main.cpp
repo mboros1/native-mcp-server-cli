@@ -24,6 +24,7 @@
 #include <map>
 #include <thread>
 #include <iomanip>
+#include <deque>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -287,10 +288,14 @@ private:
   std::chrono::steady_clock::time_point last_ctrl_c_time_;
   bool ctrl_c_pending_ = false;
   
+  std::chrono::steady_clock::time_point last_esc_time_;
+  bool esc_pending_ = false;
+  
   std::vector<std::string> command_history_;
-  std::vector<LogEntry> conversation_log_;
+  std::deque<LogEntry> conversation_log_;
   Tool* selected_tool_ = nullptr;
   int max_history_size_ = 100;
+  int max_log_size_ = 10000;  // Maximum number of log entries to keep in memory
 
 public:
   // Clean interface for state transitions
@@ -344,6 +349,38 @@ public:
     return elapsed.count() < 2000;
   }
 
+  bool HandleEsc() {
+    auto now = std::chrono::steady_clock::now();
+    
+    if (esc_pending_) {
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_esc_time_);
+      SPDLOG_DEBUG("Second Esc received, elapsed: {}ms", elapsed.count());
+      if (elapsed.count() < 2000) {
+        SPDLOG_INFO("Double Esc detected - should clear input");
+        esc_pending_ = false;  // Reset the pending state
+        return true;  // Return true to indicate input should be cleared
+      }
+    }
+    
+    SPDLOG_DEBUG("First Esc received");
+    esc_pending_ = true;
+    last_esc_time_ = now;
+    return false;  // First Esc, don't clear yet
+  }
+
+  void ResetEsc() {
+    esc_pending_ = false;
+  }
+
+  bool IsEscPending() const {
+    if (!esc_pending_) return false;
+    
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_esc_time_);
+    return elapsed.count() < 2000;
+  }
+  
+
   // Display mode management
   void SetDisplayMode(DisplayMode mode) { 
     SPDLOG_DEBUG("Setting display mode from {} to {}", static_cast<int>(display_mode_), static_cast<int>(mode));
@@ -368,6 +405,7 @@ public:
   
   const std::vector<std::string>& GetHistory() const { return command_history_; }
   void SetMaxHistorySize(int size) { max_history_size_ = size; }
+  void SetMaxLogSize(int size) { max_log_size_ = size; }
   
   // Conversation log management
   void AddLogEntry(LogEntryType type, const std::string& content) {
@@ -378,17 +416,35 @@ public:
     };
     conversation_log_.push_back(entry);
     
+    // Enforce size limit - remove oldest entries if needed
+    while (conversation_log_.size() > static_cast<size_t>(max_log_size_)) {
+      conversation_log_.pop_front();
+    }
+    
     // Write to persistent log file
     WriteToLogFile(entry);
     
     // New entry added - ConversationLog component handles scrolling
   }
   
-  const std::vector<LogEntry>& GetConversationLog() const { return conversation_log_; }
+  const std::deque<LogEntry>& GetConversationLog() const { return conversation_log_; }
   
   void ClearConversationLog() { conversation_log_.clear(); }
   
   // Scroll position is now handled by ConversationLog component
+  
+  std::string GetStatusMessage(bool has_input_text) const {
+    if (IsCtrlCPending()) {
+      return "Press Ctrl+C again to exit";
+    }
+    if (IsEscPending()) {
+      return "Press Esc again to clear the input";
+    }
+    if (has_input_text) {
+      return "Hit Ctrl+N or click 'Send' to submit";
+    }
+    return "Type /help for commands • Ctrl+C twice to exit • Use ↑/↓ for history";
+  }
 
 private:
   void WriteToLogFile(const LogEntry& entry) {
@@ -467,6 +523,169 @@ public:
     }
     
     return false;
+  }
+};
+
+// ============================================================================
+// InputWithHistory Component - Input field with command history navigation
+// ============================================================================
+class InputWithHistory : public ComponentBase {
+private:
+  std::deque<std::string> command_history_;
+  std::string current_input_;
+  int history_index_ = -1;  // -1 means not browsing history
+  std::string* input_content_;
+  Component input_component_;
+  InputOption input_options_;
+  
+public:
+  InputWithHistory(std::string* content, InputOption options) 
+    : input_content_(content), input_options_(options) {
+    input_component_ = Input(input_content_, input_options_);
+    Add(input_component_);
+    LoadHistory();
+  }
+  
+  void AddToHistory(const std::string& command) {
+    if (!command.empty() && (command_history_.empty() || command_history_.back() != command)) {
+      command_history_.push_back(command);
+      
+      // Limit history size
+      if (command_history_.size() > 100) {
+        command_history_.pop_front();
+      }
+      
+      // Save to persistent storage
+      SaveHistory();
+    }
+    history_index_ = -1;  // Reset history browsing
+  }
+  
+  bool OnEvent(Event event) override {
+    // Only handle arrows when this input is focused and not in multiline mode at cursor positions that would conflict
+    if (Focused()) {
+      if (event == Event::ArrowUp) {
+        NavigateHistoryUp();
+        return true;
+      }
+      
+      if (event == Event::ArrowDown) {
+        NavigateHistoryDown();
+        return true;
+      }
+    }
+    
+    // Let input component handle other events (including Ctrl+N)
+    return ComponentBase::OnEvent(event);
+  }
+  
+  // Expose the underlying input component for external access
+  Component GetInputComponent() { return input_component_; }
+  
+private:
+  void NavigateHistoryUp() {
+    if (command_history_.empty()) return;
+    
+    // First time browsing history - save current input
+    if (history_index_ == -1) {
+      current_input_ = *input_content_;
+      history_index_ = command_history_.size() - 1;
+    } else if (history_index_ > 0) {
+      history_index_--;
+    }
+    
+    *input_content_ = command_history_[history_index_];
+  }
+  
+  void NavigateHistoryDown() {
+    if (history_index_ == -1) return;  // Not browsing history
+    
+    history_index_++;
+    
+    if (history_index_ >= (int)command_history_.size()) {
+      // Restore original input
+      *input_content_ = current_input_;
+      history_index_ = -1;
+    } else {
+      *input_content_ = command_history_[history_index_];
+    }
+  }
+  
+  void LoadHistory() {
+    // Create .data directory if it doesn't exist
+    std::filesystem::create_directories(".data");
+    
+    std::ifstream history_file(".data/history.log");
+    if (!history_file.is_open()) {
+      return;  // File doesn't exist yet, that's ok
+    }
+    
+    std::string line;
+    while (std::getline(history_file, line)) {
+      if (!line.empty()) {
+        // Unescape newlines
+        std::string unescaped = UnescapeString(line);
+        command_history_.push_back(unescaped);
+      }
+    }
+    
+    // Enforce size limit after loading
+    while (command_history_.size() > 100) {
+      command_history_.pop_front();
+    }
+    
+    history_file.close();
+  }
+  
+  void SaveHistory() {
+    // Create .data directory if it doesn't exist
+    std::filesystem::create_directories(".data");
+    
+    std::ofstream history_file(".data/history.log");
+    if (!history_file.is_open()) {
+      SPDLOG_ERROR("Failed to open history file for writing");
+      return;
+    }
+    
+    for (const auto& command : command_history_) {
+      // Escape newlines and write to file
+      std::string escaped = EscapeString(command);
+      history_file << escaped << "\n";
+    }
+    
+    history_file.close();
+  }
+  
+  std::string EscapeString(const std::string& str) {
+    std::string result;
+    for (char c : str) {
+      switch (c) {
+        case '\n': result += "\\n"; break;
+        case '\r': result += "\\r"; break;
+        case '\t': result += "\\t"; break;
+        case '\\': result += "\\\\"; break;
+        default: result += c; break;
+      }
+    }
+    return result;
+  }
+  
+  std::string UnescapeString(const std::string& str) {
+    std::string result;
+    for (size_t i = 0; i < str.length(); i++) {
+      if (str[i] == '\\' && i + 1 < str.length()) {
+        switch (str[i + 1]) {
+          case 'n': result += '\n'; i++; break;
+          case 'r': result += '\r'; i++; break;
+          case 't': result += '\t'; i++; break;
+          case '\\': result += '\\'; i++; break;
+          default: result += str[i]; break;
+        }
+      } else {
+        result += str[i];
+      }
+    }
+    return result;
   }
 };
 
@@ -699,9 +918,16 @@ public:
       return true;
     }
     
-    // Reset Ctrl+C on other input
+    // Escape is handled at the Application level to prevent double processing
+    // if (event == Event::Escape) {
+    //   state_.HandleEsc();
+    //   return true;
+    // }
+    
+    // Reset Ctrl+C and Esc on other input
     if (event.is_character()) {
       state_.ResetCtrlC();
+      state_.ResetEsc();
     }
     // Ctrl+N handling should be done in the Application's input component wrapper
     // Not here in InputHandler
@@ -1074,7 +1300,7 @@ private:
   Closure exit_closure_;
   
   std::string user_input_;
-  Component input_component_;
+  Component input_with_history_;
   Component send_button_;
   Component conversation_log_;
   ConversationLogManager log_manager_;
@@ -1176,7 +1402,7 @@ public:
     screen_.ForceHandleCtrlC(false);
     exit_closure_ = screen_.ExitLoopClosure();
     
-    // Create multiline input component
+    // Create multiline input component with history
     InputOption input_options;
     input_options.placeholder = config_.inputPlaceholder;
     input_options.multiline = true;  // Enable multiline mode
@@ -1196,29 +1422,48 @@ public:
       return state.element;
     };
     
-    // Create the input component
-    auto raw_input = Input(&user_input_, input_options);
+    // Create the input with history component
+    auto input_with_history_impl = std::make_shared<InputWithHistory>(&user_input_, input_options);
     
-    // Wrap to handle Ctrl+N as send command
-    input_component_ = CatchEvent(raw_input, [this](Event event) {
+    // Wrap to handle Ctrl+N as send command and double-Esc to clear
+    input_with_history_ = CatchEvent(input_with_history_impl, [this, input_with_history_impl](Event event) {
       if (event == Event::CtrlN) {
         // Ctrl+N sends the message
         if (!user_input_.empty()) {
           SPDLOG_DEBUG("Ctrl+N pressed - sending message: {}", user_input_);
           std::string command = user_input_;
+          
+          // Add to command history
+          input_with_history_impl->AddToHistory(command);
+          
           user_input_.clear();
           input_handler_->ProcessCommand(command);
         }
         return true;  // Consume Ctrl+N
       }
-      return false;  // Let other events pass through (including Enter for newlines)
+      
+      if (event == Event::Escape) {
+        // Handle the Esc and check if we should clear
+        bool should_clear = state_.HandleEsc();
+        if (should_clear) {
+          SPDLOG_DEBUG("Double Esc - clearing input");
+          user_input_.clear();
+        }
+        return true;  // Consume the Escape event to prevent default behavior
+      }
+      
+      return false;  // Let other events pass through (including Enter for newlines and arrow keys)
     });
     
     // Create a clickable send button
-    send_button_ = Button("Send", [this] {
+    send_button_ = Button("Send", [this, input_with_history_impl] {
       if (!user_input_.empty()) {
         SPDLOG_DEBUG("Send button clicked: {}", user_input_);
         std::string command = user_input_;
+        
+        // Add to command history
+        input_with_history_impl->AddToHistory(command);
+        
         user_input_.clear();
         input_handler_->ProcessCommand(command);
       }
@@ -1265,7 +1510,7 @@ public:
     
     // Create input container with send button
     auto input_container = Container::Horizontal({
-      input_component_,
+      input_with_history_,
       send_button_
     });
     
@@ -1284,17 +1529,23 @@ public:
         screen_.Post([this] { exit_closure_(); });
       }
       
+      // Create status line
+      bool has_input_text = !user_input_.empty();
+      std::string status_msg = state_.GetStatusMessage(has_input_text);
+      auto status_line = text(" " + status_msg) | color(Colors::kGray) | dim;
+      
       return vbox({
         header->Render() | size(HEIGHT, EQUAL, 3),
         conversation_log_->Render() | flex,
         text(""),  // Small gap
         hbox({
           text(" ▶ ") | color(Colors::kHotPink),
-          input_component_->Render() | color(Colors::kGreen) | flex,
+          input_with_history_->Render() | color(Colors::kGreen) | flex,
           text(" ") | color(Colors::kPurple),
           send_button_->Render(),
           text(" ") | color(Colors::kPurple)
         }) | border | color(Colors::kPurple) | bgcolor(Colors::kBackground),
+        status_line,
         text("")  // Bottom padding
       }) | bgcolor(Colors::kBackground);
     });
