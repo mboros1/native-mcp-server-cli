@@ -109,6 +109,7 @@ private:
   bool running_ = false;
   std::string host_;
   int port_;
+  std::function<void(const std::string&, const std::string&)> response_callback_;
 
 public:
   MCPClient(const std::string& host = "127.0.0.1", int port = 4000) 
@@ -169,6 +170,10 @@ public:
     tcp_client_->send_message(json);
   }
   
+  void SetResponseCallback(std::function<void(const std::string&, const std::string&)> callback) {
+    response_callback_ = callback;
+  }
+  
 private:
   void ProcessEvents() {
     while (running_) {
@@ -186,7 +191,7 @@ private:
             break;
           case EventType::MessageReceived:
             SPDLOG_DEBUG("Received from server: {}", event.data);
-            // TODO: Parse JSON and handle responses
+            HandleServerMessage(event.data);
             break;
           default:
             break;
@@ -197,6 +202,52 @@ private:
       }
     }
     SPDLOG_INFO("Event processor thread exiting");
+  }
+  
+  void HandleServerMessage(const std::string& message) {
+    if (!response_callback_) {
+      SPDLOG_WARN("No response callback set, cannot process server message");
+      return;
+    }
+    
+    try {
+      // Parse JSON response from server
+      dom::parser parser;
+      dom::element doc;
+      
+      auto error = parser.parse(message).get(doc);
+      if (error) {
+        SPDLOG_ERROR("Failed to parse server message: {}", error_message(error));
+        return;
+      }
+      
+      // Check if it's a chat response
+      if (doc["type"].is_string() && std::string(doc["type"].get_string().value()) == "response") {
+        if (doc["reply"].is_string()) {
+          std::string reply = std::string(doc["reply"].get_string().value());
+          SPDLOG_INFO("Received chat response: {}", reply);
+          
+          // Check if this is a system message (like /new command response)
+          if (reply.find("Started new conversation") != std::string::npos || 
+              reply.find("Chat history has been rotated") != std::string::npos) {
+            response_callback_("SYSTEM", reply);
+          } else {
+            response_callback_("RESPONSE", reply);
+          }
+        }
+      } else if (doc["type"].is_string() && std::string(doc["type"].get_string().value()) == "error") {
+        if (doc["message"].is_string()) {
+          std::string error_msg = std::string(doc["message"].get_string().value());
+          SPDLOG_ERROR("Received error from server: {}", error_msg);
+          response_callback_("ERROR", "Server error: " + error_msg);
+        }
+      } else {
+        SPDLOG_DEBUG("Received non-chat message: {}", message);
+      }
+      
+    } catch (const std::exception& e) {
+      SPDLOG_ERROR("Error processing server message: {}", e.what());
+    }
   }
 };
 
@@ -475,14 +526,26 @@ private:
 // ConversationLog Manager - Handles scroll state for conversation display
 // ============================================================================
 class ConversationLogManager {
+private:
+  ScreenInteractive* screen_ = nullptr;
+
 public:
   float scroll_y_ = 1.0f;  // Start at bottom (1.0 = 100% scrolled down)
   bool auto_scroll_ = true; // Auto-scroll to bottom on new messages
+  
+  void SetScreen(ScreenInteractive* screen) {
+    screen_ = screen;
+  }
   
   void OnNewMessage() {
     // Called when a new message is added
     if (auto_scroll_) {
       scroll_y_ = 1.0f;  // Scroll to bottom
+    }
+    
+    // Trigger screen refresh to immediately show new message
+    if (screen_) {
+      screen_->Post(Event::Custom);
     }
   }
   
@@ -716,12 +779,14 @@ private:
   
   void DumpScreen();
   
+public:
   void AddLogEntryWithNotification(LogEntryType type, const std::string& content) {
     state_.AddLogEntry(type, content);
     if (log_manager_) {
       log_manager_->OnNewMessage();
     }
   }
+private:
 
 public:
   InputHandler(StateManager& state, std::vector<Tool>& tools) 
@@ -840,6 +905,7 @@ public:
           "  /tools   - List available tools\n"
           "  /servers - Show connected servers\n"
           "  /clear   - Clear conversation history\n"
+          "  /new     - Start new chat conversation\n"
           "  /exit    - Exit the application (aliases: /quit, /q)\n"
           "\n"
           "Keyboard shortcuts:\n"
@@ -890,6 +956,15 @@ public:
       } else if (cmd == "clear") {
         state_.ClearConversationLog();
         AddLogEntryWithNotification(LogEntryType::SYSTEM, "Conversation cleared");
+      } else if (cmd == "new") {
+        // Send /new command to server to rotate chat history
+        if (comm_mode_ == CommMode::IPC && mcp_client_ && mcp_client_->IsConnected()) {
+          std::string request = R"({"type": "chat", "content": "/new"})";
+          mcp_client_->SendRequest(request);
+          SPDLOG_DEBUG("Sent /new command to server");
+        } else {
+          AddLogEntryWithNotification(LogEntryType::ERROR, "New conversation command requires connection to MCP server");
+        }
       } else if (cmd == "dump") {
         SPDLOG_DEBUG("Dump screen requested");
         DumpScreen();
@@ -961,6 +1036,8 @@ private:
            text("→ Show connected MCP servers") | color(Colors::kDimGreen)),
       hbox(text("  /connect   ") | color(Colors::kCyan), 
            text("→ Connect to an MCP server") | color(Colors::kDimGreen)),
+      hbox(text("  /new       ") | color(Colors::kCyan), 
+           text("→ Start new chat conversation") | color(Colors::kDimGreen)),
       hbox(text("  /dump      ") | color(Colors::kCyan), 
            text("→ Save current screen to file") | color(Colors::kDimGreen)),
       hbox(text("  /exit      ") | color(Colors::kCyan), 
@@ -1056,6 +1133,7 @@ public:
         ss << "  /tools     → List available MCP tools\n";
         ss << "  /servers   → Show connected MCP servers\n";
         ss << "  /connect   → Connect to an MCP server\n";
+        ss << "  /new       → Start new chat conversation\n";
         ss << "  /dump      → Save current screen to file\n";
         ss << "  /exit      → Exit the application (alias: /q)\n\n";
         ss << "▶ MCP TOOL USAGE\n\n";
@@ -1324,6 +1402,9 @@ public:
     input_handler_->SetRenderer(renderer_.get());
     input_handler_->SetLogManager(&log_manager_);
     
+    // Set screen reference for immediate UI updates
+    log_manager_.SetScreen(&screen_);
+    
     // Create conversation log component using Renderer
     auto conversation_log_renderer = Renderer([this] {
       Elements log_elements;
@@ -1484,6 +1565,18 @@ public:
       mcp_client_ = std::make_unique<MCPClient>(host, port);
       if (mcp_client_->Connect()) {
         input_handler_->SetMCPClient(mcp_client_.get());
+        
+        // Set up callback to handle server responses
+        mcp_client_->SetResponseCallback([this](const std::string& type, const std::string& content) {
+          if (type == "RESPONSE") {
+            input_handler_->AddLogEntryWithNotification(LogEntryType::RESPONSE, content);
+          } else if (type == "SYSTEM") {
+            input_handler_->AddLogEntryWithNotification(LogEntryType::SYSTEM, content);
+          } else if (type == "ERROR") {
+            input_handler_->AddLogEntryWithNotification(LogEntryType::ERROR, content);
+          }
+        });
+        
         SPDLOG_INFO("TCP client connected successfully");
       }
     }

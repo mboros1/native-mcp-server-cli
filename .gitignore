@@ -18,6 +18,7 @@ demo_*
 .DS_Store
 *.sublime-*
 .history/
+.data/
 
 # Debug files
 *.dSYM/
