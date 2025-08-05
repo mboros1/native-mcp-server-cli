@@ -29,7 +29,7 @@ if (!fs.existsSync(dataDir)) {
 // Create log file
 const logFile = fs.createWriteStream(path.join(__dirname, 'test-server.log'), { flags: 'a' });
 
-// Chat history management
+// Chat history management - now reading from C++ client
 let chatHistory = [];
 const chatHistoryFile = path.join(dataDir, 'chat-history.json');
 
@@ -38,14 +38,22 @@ function log(message) {
     logFile.write(`[${timestamp}] ${message}\n`);
 }
 
-// Load chat history from file
+// Load chat history from file (written by C++ client)
 function loadChatHistory() {
     if (fs.existsSync(chatHistoryFile)) {
         try {
             const data = fs.readFileSync(chatHistoryFile, 'utf8');
-            chatHistory = data.trim().split('\n')
+            const entries = data.trim().split('\n')
                 .filter(line => line.trim())
                 .map(line => JSON.parse(line));
+            
+            // Convert C++ ChatHistoryEntry format to API format
+            chatHistory = entries.map(entry => ({
+                role: entry.role,
+                content: entry.content
+                // Note: we ignore token_cnt and timestamp - just need role/content for API
+            }));
+            
             log(`Loaded ${chatHistory.length} messages from chat history`);
         } catch (err) {
             log(`Error loading chat history: ${err.message}`);
@@ -54,29 +62,15 @@ function loadChatHistory() {
     }
 }
 
-// Save message to chat history
-function saveChatMessage(message) {
-    chatHistory.push(message);
-    try {
-        fs.appendFileSync(chatHistoryFile, JSON.stringify(message) + '\n');
-    } catch (err) {
-        log(`Error saving chat message: ${err.message}`);
-    }
+// Add message to in-memory chat history (C++ handles file writing)
+function addToMemoryHistory(role, content) {
+    chatHistory.push({ role, content });
 }
 
-// Rotate chat history (for /new command)
+// Rotate chat history (for /new command) - just clear memory, C++ handles file rotation
 function rotateChatHistory() {
-    if (fs.existsSync(chatHistoryFile)) {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const backupFile = path.join(dataDir, `chat-history-${timestamp}.json`);
-        try {
-            fs.renameSync(chatHistoryFile, backupFile);
-            log(`Rotated chat history to ${backupFile}`);
-        } catch (err) {
-            log(`Error rotating chat history: ${err.message}`);
-        }
-    }
     chatHistory = [];
+    log('Cleared chat history from memory (C++ handles file rotation)');
 }
 
 const server = net.createServer((socket) => {
@@ -115,15 +109,35 @@ const server = net.createServer((socket) => {
             return;
           }
           
-          // Skip non-chat messages
+          // Handle reload request
+          if (payload.type === 'reload' && payload.content === 'chat_history') {
+            log(`Reload request from ${clientId} - reloading chat history from file`);
+            loadChatHistory();
+            log(`Reloaded chat history: ${chatHistory.length} entries`);
+            return;
+          }
+          
+          // Handle sync request  
+          if (payload.type === 'sync' && payload.content === 'request_history') {
+            const serverStats = `Server: ${chatHistory.length} entries`;
+            socket.write(JSON.stringify({
+              type: 'sync_response',
+              server_stats: serverStats,
+              server_history: chatHistory,
+              timestamp: Date.now()
+            }) + '\n');
+            log(`Sent sync response to ${clientId}: ${serverStats}`);
+            return;
+          }
+          
+          // Skip non-chat/sync/reload messages
           if (payload.type !== 'chat') {
             log(`Skipping non-chat message: ${payload.type}`);
             return;
           }
           
-          // Add user message to chat history
-          const userMessage = { role: 'user', content: payload.content };
-          saveChatMessage(userMessage);
+          // Add user message to in-memory history (C++ already wrote to file)
+          addToMemoryHistory('user', payload.content);
           
           // Build full conversation history for API call
           const messages = [...chatHistory];
@@ -138,9 +152,8 @@ const server = net.createServer((socket) => {
 
           const replyText = resp.choices[0].message.content;
           
-          // Save assistant response to chat history
-          const assistantMessage = { role: 'assistant', content: replyText };
-          saveChatMessage(assistantMessage);
+          // Add assistant response to in-memory history (C++ will write to file when it receives response)
+          addToMemoryHistory('assistant', replyText);
           
           const response = {
             type: 'response',
