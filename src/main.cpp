@@ -280,7 +280,7 @@ private:
 // Log Entry for conversation history
 // ============================================================================
 // Move enum outside for JS_ENUM
-JS_ENUM(LogEntryType, USER, SYSTEM, RESPONSE, ERROR)
+JS_ENUM(LogEntryType, USER, SYSTEM, RESPONSE, ERROR, BLOCKED)
 JS_ENUM_DECLARE_STRING_PARSER(LogEntryType)
 
 // Custom TypeHandler for time_point with ISO 8601 string format
@@ -391,11 +391,26 @@ private:
   std::string retry_message_;
   std::string retry_original_message_;
   
+  // Awaiting response state for coordinated timeouts
+  std::atomic<bool> awaiting_response_{false};
+  std::string pending_message_;
+  std::chrono::steady_clock::time_point request_start_time_;
+  std::chrono::milliseconds server_timeout_{5 * 60 * 1000}; // 5 minutes default
+  static constexpr auto CLIENT_BUFFER = std::chrono::seconds(5);
+  static constexpr auto AUTO_RESET_DELAY = std::chrono::minutes(2);
+  
   // Token counting
   std::atomic<size_t> total_context_tokens_{0};
   token_est::TokenEstimator tokenizer_;
 
 public:
+  enum class TimeoutState {
+    NORMAL,
+    SERVER_OVERDUE,     // server_timeout + 5s passed
+    RECOMMEND_RESET,    // show /reset recommendation  
+    AUTO_RESET          // auto-reset after +2min more
+  };
+
   // Clean interface for state transitions
   void RequestExit() {
     if (app_state_ == AppState::RUNNING) {
@@ -556,6 +571,48 @@ public:
     return retry_original_message_;
   }
 
+  // Awaiting response management
+  void SetAwaitingResponse(const std::string& message) {
+    awaiting_response_ = true;
+    pending_message_ = message;
+    request_start_time_ = std::chrono::steady_clock::now();
+  }
+  
+  void ClearAwaitingResponse() {
+    awaiting_response_ = false;
+    pending_message_.clear();
+  }
+  
+  bool IsAwaitingResponse() const {
+    return awaiting_response_.load();
+  }
+  
+  std::chrono::milliseconds GetServerTimeout() const {
+    return server_timeout_;
+  }
+  
+  TimeoutState GetTimeoutState() const {
+    if (!awaiting_response_) return TimeoutState::NORMAL;
+    
+    auto elapsed = std::chrono::steady_clock::now() - request_start_time_;
+    
+    if (elapsed > server_timeout_ + CLIENT_BUFFER + AUTO_RESET_DELAY) {
+      return TimeoutState::AUTO_RESET;
+    } else if (elapsed > server_timeout_ + CLIENT_BUFFER) {
+      return TimeoutState::RECOMMEND_RESET;
+    } else if (elapsed > server_timeout_) {
+      return TimeoutState::SERVER_OVERDUE;
+    }
+    
+    return TimeoutState::NORMAL;
+  }
+  
+  std::chrono::seconds GetElapsedTime() const {
+    if (!awaiting_response_) return std::chrono::seconds(0);
+    auto elapsed = std::chrono::steady_clock::now() - request_start_time_;
+    return std::chrono::duration_cast<std::chrono::seconds>(elapsed);
+  }
+
   std::string GetStatusMessage(bool has_input_text) const {
     if (IsCtrlCPending()) {
       return "Press Ctrl+C again to exit";
@@ -565,6 +622,17 @@ public:
     }
     if (retry_available_) {
       return "Click 'Retry' to resend the last message, or continue typing normally";
+    }
+    if (IsAwaitingResponse()) {
+      auto timeout_state = GetTimeoutState();
+      switch (timeout_state) {
+        case TimeoutState::SERVER_OVERDUE:
+          return "Server overdue - press <Esc> or type /reset to cancel";
+        case TimeoutState::RECOMMEND_RESET:
+          return "Server not responding - press <Esc> or /reset to interrupt";
+        default:
+          return "Awaiting response... (press <Esc> to cancel)";
+      }
     }
     if (has_input_text) {
       return "Hit Ctrl+N or click 'Send' to submit";
@@ -595,6 +663,13 @@ private:
 
 public:
   void WriteToChatHistory(const std::string& role, const std::string& content) {
+    // For user messages, only write to chat history if we're not awaiting a response
+    // This prevents orphaned user messages when requests are blocked by mutex
+    if (role == "user" && IsAwaitingResponse()) {
+      SPDLOG_DEBUG("Skipping chat history write for user message - already awaiting response");
+      return;
+    }
+    
     // Calculate token count
     size_t tokens = tokenizer_.count_tokens(content);
     
@@ -1264,6 +1339,26 @@ public:
     mcp_client_ = client;
   }
   
+  void SendInterrupt() {
+    if (!state_.IsAwaitingResponse()) {
+      SPDLOG_DEBUG("No active request to interrupt");
+      return;
+    }
+    
+    if (comm_mode_ != CommMode::IPC || !mcp_client_ || !mcp_client_->IsConnected()) {
+      AddLogEntryWithNotification(LogEntryType::ERROR, "Cannot interrupt - not connected to server");
+      return;
+    }
+    
+    SPDLOG_INFO("Sending interrupt request");
+    std::string request = R"({"type": "reset"})";
+    mcp_client_->SendRequest(request);
+    
+    // Clear awaiting response state immediately
+    state_.ClearAwaitingResponse();
+    AddLogEntryWithNotification(LogEntryType::SYSTEM, "Interrupt sent - cancelling request");
+  }
+
   void SendRetryRequest() {
     if (!state_.IsRetryAvailable()) {
       SPDLOG_WARN("No retry available");
@@ -1302,10 +1397,23 @@ public:
       return;
     }
     
-    // Simple JSON construction for IPC
+    // Check if already awaiting response - if so, block and add BLOCKED entry
+    if (state_.IsAwaitingResponse()) {
+      SPDLOG_WARN("Already awaiting response, blocking new message");
+      AddLogEntryWithNotification(LogEntryType::BLOCKED, 
+        "Message blocked - previous request still processing. Please wait or use retry if timed out.");
+      return;
+    }
+    
+    // Set awaiting response state
+    state_.SetAwaitingResponse(message);
+    
+    // Include server timeout in request
+    auto timeout_ms = state_.GetServerTimeout().count();
     std::stringstream json;
     json << "{\"type\":\"chat\",\"id\":" << ++message_id_ 
-         << ",\"content\":\"" << EscapeJSON(message) << "\"}";
+         << ",\"content\":\"" << EscapeJSON(message) << "\""
+         << ",\"timeout\":" << timeout_ms << "}";
     
     SPDLOG_INFO("Sending chat JSON: {}", json.str());
     mcp_client_->SendRequest(json.str());
@@ -1456,6 +1564,21 @@ public:
       } else if (cmd == "sync") {
         // Request chat history sync check from server
         RequestSyncCheck(true);  // Enable retry on first attempt
+      } else if (cmd == "reset") {
+        // Clear awaiting response state manually and notify server
+        if (state_.IsAwaitingResponse()) {
+          // Send reset command to server to clear its processing state
+          if (comm_mode_ == CommMode::IPC && mcp_client_ && mcp_client_->IsConnected()) {
+            std::string request = R"({"type": "reset"})";
+            mcp_client_->SendRequest(request);
+            AddLogEntryWithNotification(LogEntryType::SYSTEM, "Sent reset request to server");
+          }
+          
+          state_.ClearAwaitingResponse();
+          AddLogEntryWithNotification(LogEntryType::SYSTEM, "Manually reset awaiting response state");
+        } else {
+          AddLogEntryWithNotification(LogEntryType::SYSTEM, "No active request to reset");
+        }
       } else if (cmd == "dump") {
         SPDLOG_DEBUG("Dump screen requested");
         DumpScreen();
@@ -1473,11 +1596,14 @@ public:
       if (comm_mode_ == CommMode::IPC) {
         SPDLOG_INFO("Sending chat message to MCP server");
         
-        // Write user message to chat history immediately
-        state_.WriteToChatHistory("user", trimmed_command);
-        
         SendChatMessage(trimmed_command);
-        AddLogEntryWithNotification(LogEntryType::SYSTEM, "[Awaiting response...]");
+        
+        // Only write to chat history and add system message if not blocked
+        if (state_.IsAwaitingResponse()) {
+          // Write user message to chat history now that we're successfully awaiting
+          state_.WriteToChatHistory("user", trimmed_command);
+          AddLogEntryWithNotification(LogEntryType::SYSTEM, "[Awaiting response...]");
+        }
       } else {
         SPDLOG_INFO("In standalone mode - showing not implemented");
         AddLogEntryWithNotification(LogEntryType::RESPONSE, "Chat functionality requires connection to MCP server");
@@ -1491,11 +1617,11 @@ public:
       return true;
     }
     
-    // Escape is handled at the Application level to prevent double processing
-    // if (event == Event::Escape) {
-    //   state_.HandleEsc();
-    //   return true;
-    // }
+    // Handle Escape key as interrupt when awaiting response
+    if (event == Event::Escape && state_.IsAwaitingResponse()) {
+      SendInterrupt();
+      return true;
+    }
     
     // Reset Ctrl+C and Esc on other input
     if (event.is_character()) {
@@ -1787,6 +1913,15 @@ public:
               paragraph(entry.content) | color(Colors::kHotPink)
             });
             break;
+          case LogEntryType::BLOCKED:
+            line = hbox({
+              text("[") | color(Colors::kGray),
+              text(time_str) | color(Colors::kGray),
+              text("] ") | color(Colors::kGray),
+              text("Blocked: ") | bold | color(Colors::kPurple),
+              paragraph(entry.content) | color(Colors::kPurple)
+            });
+            break;
         }
       }
       
@@ -1885,6 +2020,9 @@ private:
   Component event_log_;
   ConversationLogManager log_manager_;
   CommMode comm_mode_ = CommMode::STANDALONE;
+  
+  // Timeout monitoring
+  StateManager::TimeoutState last_timeout_state_ = StateManager::TimeoutState::NORMAL;
 
 public:
   Application() : screen_(ScreenInteractive::Fullscreen()) {
@@ -1974,6 +2112,19 @@ public:
               text("] ") | color(Colors::kGray),
               text("Error: ") | bold | color(Colors::kHotPink),
               paragraph(entry.content) | color(Colors::kHotPink) | size(WIDTH, LESS_THAN, content_width)
+            });
+            break;
+          }
+          case LogEntryType::BLOCKED: {
+            // "[HH:MM:SS] Blocked: " = 1 + 8 + 2 + 9 = 20 chars + 3 scroll bar + 5 gutter = 28
+            int prefix_width = 28;
+            int content_width = terminal_width - prefix_width;
+            line = hbox({
+              text("[") | color(Colors::kGray),
+              text(time_str) | color(Colors::kGray),
+              text("] ") | color(Colors::kGray),
+              text("Blocked: ") | bold | color(Colors::kPurple),
+              paragraph(entry.content) | color(Colors::kPurple) | size(WIDTH, LESS_THAN, content_width)
             });
             break;
           }
@@ -2081,6 +2232,42 @@ public:
     });
   }
 
+  void CheckTimeoutState() {
+    auto current_state = state_.GetTimeoutState();
+    
+    // Only act on state transitions to avoid spam
+    if (current_state != last_timeout_state_) {
+      switch (current_state) {
+        case StateManager::TimeoutState::SERVER_OVERDUE: {
+          auto seconds = state_.GetElapsedTime().count();
+          input_handler_->AddLogEntryWithNotification(LogEntryType::SYSTEM, 
+            "Server overdue (" + std::to_string(seconds / 60) + ":" + 
+            std::to_string(seconds % 60) + ") - press <Esc> or type /reset to cancel");
+          break;
+        }
+        case StateManager::TimeoutState::RECOMMEND_RESET: {
+          auto seconds = state_.GetElapsedTime().count();
+          input_handler_->AddLogEntryWithNotification(LogEntryType::SYSTEM, 
+            "Server not responding (" + std::to_string(seconds / 60) + ":" + 
+            std::to_string(seconds % 60) + ") - press <Esc> or /reset to interrupt");
+          break;
+        }
+        case StateManager::TimeoutState::AUTO_RESET: {
+          auto seconds = state_.GetElapsedTime().count();
+          input_handler_->AddLogEntryWithNotification(LogEntryType::SYSTEM, 
+            "Auto-reset: Server failed to respond after " + std::to_string(seconds / 60) + ":" + 
+            std::to_string(seconds % 60));
+          state_.ClearAwaitingResponse();
+          break;
+        }
+        case StateManager::TimeoutState::NORMAL:
+          // No action needed for normal state
+          break;
+      }
+      last_timeout_state_ = current_state;
+    }
+  }
+
   void SetCommMode(CommMode mode, const std::string& host = "127.0.0.1", int port = 4000) {
     comm_mode_ = mode;
     input_handler_->SetCommMode(mode);
@@ -2096,6 +2283,9 @@ public:
         // Set up callback to handle server responses
         mcp_client_->SetResponseCallback([this](const std::string& type, const std::string& content) {
           if (type == "RESPONSE") {
+            // Clear awaiting response state
+            state_.ClearAwaitingResponse();
+            
             // Write assistant response to chat history
             state_.WriteToChatHistory("assistant", content);
             input_handler_->AddLogEntryWithNotification(LogEntryType::RESPONSE, content);
@@ -2142,6 +2332,9 @@ public:
               input_handler_->AddLogEntryWithNotification(LogEntryType::ERROR, "Sync check failed: " + std::string(e.what()));
             }
           } else if (type == "TIMEOUT_WITH_RETRY") {
+            // Clear awaiting response state
+            state_.ClearAwaitingResponse();
+            
             // Parse timeout message and original message
             size_t delimiter_pos = content.find("|");
             if (delimiter_pos != std::string::npos) {
@@ -2155,6 +2348,9 @@ public:
               input_handler_->AddLogEntryWithNotification(LogEntryType::ERROR, timeout_msg);
             }
           } else if (type == "ERROR") {
+            // Clear awaiting response state
+            state_.ClearAwaitingResponse();
+            
             input_handler_->AddLogEntryWithNotification(LogEntryType::ERROR, content);
           }
         });
@@ -2209,6 +2405,9 @@ public:
     
     // Final renderer that composes everything
     auto main_component = Renderer(layout, [this, &header] {
+      // Check timeout state and handle escalation
+      CheckTimeoutState();
+      
       // Check exit condition
       if (state_.IsExitRequested()) {
         state_.ConfirmExit();

@@ -36,6 +36,9 @@ const chatHistoryFile = path.join(dataDir, 'chat-history.json');
 // Client state management for mutex and retry functionality
 const clientStates = new Map(); // clientId -> { processing: boolean, lastMessage: string, startTime: number }
 
+// Track active requests with AbortControllers
+const activeRequests = new Map(); // clientId -> { controller, startTime, message }
+
 function log(message) {
     const timestamp = new Date().toISOString();
     logFile.write(`[${timestamp}] ${message}\n`);
@@ -110,7 +113,7 @@ function rotateChatHistory() {
 }
 
 // Main chat processing function with timeout handling
-async function processChatMessage(socket, clientId, messageContent) {
+async function processChatMessage(socket, clientId, messageContent, clientTimeout = null) {
     // Check if client is already processing a message
     if (isClientProcessing(clientId)) {
         socket.write(JSON.stringify({
@@ -123,6 +126,17 @@ async function processChatMessage(socket, clientId, messageContent) {
     // Set processing state
     setClientProcessing(clientId, messageContent);
     
+    // Create AbortController for this request
+    const controller = new AbortController();
+    const signal = controller.signal;
+    
+    // Store the active request
+    activeRequests.set(clientId, {
+        controller,
+        startTime: Date.now(),
+        message: messageContent
+    });
+    
     try {
         // Add user message to in-memory history (C++ already wrote to file)
         addToMemoryHistory('user', messageContent);
@@ -130,14 +144,38 @@ async function processChatMessage(socket, clientId, messageContent) {
         // Build full conversation history for API call
         const messages = [...chatHistory];
 
+        // Use client-provided timeout or default to 5 minutes
+        const timeoutMs = clientTimeout || (5 * 60 * 1000);
+        
         log(`Making API request to Kimi K2 with: ${messageContent}`);
+        log(`DEBUG: Starting request for ${clientId}, signal.aborted = ${signal.aborted}`);
+        
+        // Check if already aborted before making request
+        if (signal.aborted) {
+            log(`DEBUG: Request was already aborted before API call for ${clientId}`);
+            throw new Error('Request was aborted');
+        }
+        
         const { data: resp } = await moonshot.post('/v1/chat/completions', {
             model: 'kimi-k2',
             messages,
             temperature: 0.3,
             max_tokens: 1024,
+            signal // Pass abort signal to axios
         });
 
+        log(`DEBUG: Request completed for ${clientId}, signal.aborted = ${signal.aborted}`);
+        
+        // Check if the request was cancelled while in progress
+        if (signal.aborted) {
+            log(`DEBUG: Request was cancelled while in progress for ${clientId} - discarding response`);
+            socket.write(JSON.stringify({
+                type: 'system',
+                message: 'Request was cancelled (response discarded)'
+            }) + '\n');
+            return;
+        }
+        
         const replyText = resp.choices[0].message.content;
         
         // Add assistant response to in-memory history (C++ will write to file when it receives response)
@@ -154,6 +192,18 @@ async function processChatMessage(socket, clientId, messageContent) {
         log(`Sent reply to ${clientId}: ${replyText.slice(0, 100)}…`);
         
     } catch (err) {
+        log(`DEBUG: Caught error for ${clientId}: ${err.name}, signal.aborted = ${signal.aborted}`);
+        
+        // Check if this was an abort/cancellation
+        if (err.name === 'AbortError' || signal.aborted) {
+            log(`Request cancelled for ${clientId}`);
+            socket.write(JSON.stringify({
+                type: 'system',
+                message: 'Request was cancelled'
+            }) + '\n');
+            return;
+        }
+        
         const duration = clearClientProcessing(clientId);
         
         // Check if this was a timeout error
@@ -194,10 +244,40 @@ async function processChatMessage(socket, clientId, messageContent) {
                 log(`Response data: ${JSON.stringify(err.response.data)}`);
             }
         }
-        return;
+    } finally {
+        // Clean up active request and processing state
+        activeRequests.delete(clientId);
+        clearClientProcessing(clientId);
+    }
+}
+
+// Handle interrupt requests (reset/cancel)
+function handleInterrupt(socket, clientId) {
+    const activeRequest = activeRequests.get(clientId);
+    
+    if (activeRequest) {
+        log(`DEBUG: Found active request for ${clientId}, calling abort()`);
+        
+        // Cancel the in-flight request
+        activeRequest.controller.abort();
+        activeRequests.delete(clientId);
+        
+        log(`DEBUG: Abort called, signal.aborted = ${activeRequest.controller.signal.aborted}`);
+        log(`Cancelled active request for ${clientId}`);
+        
+        socket.write(JSON.stringify({
+            type: 'system',
+            message: 'In-flight request cancelled and state cleared'
+        }) + '\n');
+    } else {
+        log(`DEBUG: No active request found for ${clientId}`);
+        socket.write(JSON.stringify({
+            type: 'system', 
+            message: 'No active request to cancel'
+        }) + '\n');
     }
     
-    // Clear processing state on success
+    // Clear processing state either way
     clearClientProcessing(clientId);
 }
 
@@ -297,14 +377,21 @@ const server = net.createServer((socket) => {
             return;
           }
           
-          // Skip non-chat/retry messages  
+          // Handle reset/interrupt requests
+          if (payload.type === 'reset') {
+            log(`Reset/interrupt request from ${clientId}`);
+            handleInterrupt(socket, clientId);
+            return;
+          }
+          
+          // Skip non-chat/retry/reset messages  
           if (payload.type !== 'chat') {
             log(`Skipping non-chat message: ${payload.type}`);
             return;
           }
           
           // Process chat message with timeout handling
-          await processChatMessage(socket, clientId, payload.content);
+          await processChatMessage(socket, clientId, payload.content, payload.timeout);
 
         } catch (err) {
           log(`Error parsing message from ${clientId}: ${err.message}`);
