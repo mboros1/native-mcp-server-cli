@@ -14,6 +14,7 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/component/event.hpp>
 #include <simdjson.h>
+#include <json_struct.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -22,6 +23,7 @@
 #include <vector>
 #include <map>
 #include <thread>
+#include <iomanip>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -31,6 +33,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <filesystem>
 
 using namespace ftxui;
 using namespace simdjson;
@@ -196,11 +199,61 @@ private:
 // ============================================================================
 // Log Entry for conversation history
 // ============================================================================
+// Move enum outside for JS_ENUM
+JS_ENUM(LogEntryType, USER, SYSTEM, RESPONSE, ERROR)
+JS_ENUM_DECLARE_STRING_PARSER(LogEntryType)
+
+// Custom TypeHandler for time_point with ISO 8601 string format
+namespace JS {
+template <>
+struct TypeHandler<std::chrono::system_clock::time_point> {
+  static Error to(std::chrono::system_clock::time_point& to_type, ParseContext& context) {
+    if (context.token.value_type == Type::String) {
+      std::string time_str;
+      auto err = TypeHandler<std::string>::to(time_str, context);
+      if (err != Error::NoError) return err;
+      
+      // Parse ISO 8601 string (simplified - assumes format)
+      std::tm tm = {};
+      std::istringstream ss(time_str);
+      ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+      
+      if (ss.fail()) {
+        return Error::UserDefinedErrors;
+      }
+      
+      to_type = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+      return Error::NoError;
+    }
+    return Error::ExpectedDataToken;
+  }
+  
+  static void from(const std::chrono::system_clock::time_point& from_type,
+                   Token& token, Serializer& serializer) {
+    // Convert to ISO 8601 string with milliseconds
+    auto time_t = std::chrono::system_clock::to_time_t(from_type);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        from_type.time_since_epoch()) % 1000;
+    
+    char time_str[30];
+    std::strftime(time_str, sizeof(time_str), "%Y-%m-%dT%H:%M:%S", std::gmtime(&time_t));
+    
+    std::string iso_time = std::string(time_str) + "." + 
+                          std::to_string(ms.count() / 100) + 
+                          std::to_string((ms.count() / 10) % 10) + 
+                          std::to_string(ms.count() % 10) + "Z";
+    
+    TypeHandler<std::string>::from(iso_time, token, serializer);
+  }
+};
+}
+
 struct LogEntry {
-  enum Type { USER, SYSTEM, RESPONSE, ERROR };
-  Type type;
+  LogEntryType type;
   std::string content;
   std::chrono::system_clock::time_point timestamp;
+  
+  JS_OBJECT(JS_MEMBER(type), JS_MEMBER(content), JS_MEMBER(timestamp));
 };
 
 // ============================================================================
@@ -318,12 +371,17 @@ public:
   void SetMaxHistorySize(int size) { max_history_size_ = size; }
   
   // Conversation log management
-  void AddLogEntry(LogEntry::Type type, const std::string& content) {
-    conversation_log_.push_back(LogEntry{
+  void AddLogEntry(LogEntryType type, const std::string& content) {
+    auto entry = LogEntry{
       type, 
       content, 
       std::chrono::system_clock::now()
-    });
+    };
+    conversation_log_.push_back(entry);
+    
+    // Write to persistent log file
+    WriteToLogFile(entry);
+    
     // Auto-scroll to bottom when new entry is added
     scroll_position_ = std::max(0, static_cast<int>(conversation_log_.size()) - 10);
   }
@@ -335,6 +393,27 @@ public:
   int GetScrollPosition() const { return scroll_position_; }
   void SetScrollPosition(int pos) { 
     scroll_position_ = std::max(0, std::min(pos, static_cast<int>(conversation_log_.size()) - 1));
+  }
+
+private:
+  void WriteToLogFile(const LogEntry& entry) {
+    // Create .data directory if it doesn't exist
+    std::filesystem::create_directories(".data");
+    
+    // Open log file in append mode
+    std::ofstream log_file(".data/conversation.log", std::ios::app);
+    if (!log_file.is_open()) {
+      SPDLOG_ERROR("Failed to open conversation log file");
+      return;
+    }
+    
+    // Serialize to compact JSON using json_struct
+    std::string json = JS::serializeStruct(entry, JS::SerializerOptions(JS::SerializerOptions::Compact));
+    
+    // Write as a single line (NDJSON format)
+    log_file << json << "\n";
+    
+    log_file.close();
   }
 };
 
@@ -448,39 +527,60 @@ public:
   void ProcessCommand(const std::string& command) {
     if (command.empty()) return;
     
-    SPDLOG_INFO("Processing command: '{}' (mode: {})", command, 
+    // Trim whitespace from the end
+    std::string trimmed_command = command;
+    trimmed_command.erase(trimmed_command.find_last_not_of(" \t\n\r\f\v") + 1);
+    
+    if (trimmed_command.empty()) return;
+    
+    SPDLOG_INFO("Processing command: '{}' (mode: {})", trimmed_command, 
                 comm_mode_ == CommMode::IPC ? "IPC" : "STANDALONE");
-    state_.AddToHistory(command);
+    state_.AddToHistory(trimmed_command);
     
     // Add user input to log
-    state_.AddLogEntry(LogEntry::USER, command);
+    state_.AddLogEntry(LogEntryType::USER, trimmed_command);
     
     // Check if it's a slash command
-    if (command[0] == '/') {
-      std::string cmd = command.substr(1); // Remove the '/'
+    if (trimmed_command[0] == '/') {
+      std::string cmd = trimmed_command.substr(1); // Remove the '/'
       
       if (cmd == "help" || cmd == "h") {
         SPDLOG_DEBUG("Showing help");
-        state_.AddLogEntry(LogEntry::SYSTEM, "Available commands:\n/help - Show this help\n/tools - List available tools\n/servers - Show connected servers\n/exit - Exit the application");
+        std::string help_text = 
+          "Available commands:\n"
+          "\n"
+          "  /help    - Show this help\n"
+          "  /tools   - List available tools\n"
+          "  /servers - Show connected servers\n"
+          "  /clear   - Clear conversation history\n"
+          "  /exit    - Exit the application (aliases: /quit, /q)\n"
+          "\n"
+          "Keyboard shortcuts:\n"
+          "  Enter    - Insert newline in input\n"
+          "  Ctrl+N   - Send message\n"
+          "  Ctrl+C   - Press twice to exit\n"
+          "\n"
+          "Type any message without a slash to chat.";
+        state_.AddLogEntry(LogEntryType::SYSTEM, help_text);
       } else if (cmd == "tools") {
         SPDLOG_DEBUG("Listing MCP tools");
         if (comm_mode_ == CommMode::IPC) {
           if (!mcp_client_ || !mcp_client_->IsConnected()) {
             SPDLOG_ERROR("MCP server not connected");
-            state_.AddLogEntry(LogEntry::ERROR, "Cannot list tools: MCP server not connected");
+            state_.AddLogEntry(LogEntryType::ERROR, "Cannot list tools: MCP server not connected");
           } else {
             SendMCPRequest("tools/list", "{}");
-            state_.AddLogEntry(LogEntry::SYSTEM, "Requesting tool list...");
+            state_.AddLogEntry(LogEntryType::SYSTEM, "Requesting tool list...");
           }
         } else {
-          state_.AddLogEntry(LogEntry::SYSTEM, "No tools available in standalone mode");
+          state_.AddLogEntry(LogEntryType::SYSTEM, "No tools available in standalone mode");
         }
       } else if (cmd == "servers") {
         SPDLOG_DEBUG("Showing connected servers");
         if (mcp_client_ && mcp_client_->IsConnected()) {
-          state_.AddLogEntry(LogEntry::SYSTEM, "Connected to TCP server at 127.0.0.1:4000");
+          state_.AddLogEntry(LogEntryType::SYSTEM, "Connected to TCP server at 127.0.0.1:4000");
         } else {
-          state_.AddLogEntry(LogEntry::SYSTEM, "No servers connected");
+          state_.AddLogEntry(LogEntryType::SYSTEM, "No servers connected");
         }
       } else if (cmd.substr(0, 4) == "use ") {
         // Parse /use <tool> [args]
@@ -496,13 +596,13 @@ public:
         SPDLOG_DEBUG("Executing MCP tool: {} with args: {}", toolName, args);
         if (comm_mode_ == CommMode::IPC) {
           SendToolCall(toolName, args);
-          state_.AddLogEntry(LogEntry::SYSTEM, "Executing tool: " + toolName);
+          state_.AddLogEntry(LogEntryType::SYSTEM, "Executing tool: " + toolName);
         } else {
-          state_.AddLogEntry(LogEntry::ERROR, "Tool execution not available in standalone mode");
+          state_.AddLogEntry(LogEntryType::ERROR, "Tool execution not available in standalone mode");
         }
       } else if (cmd == "clear") {
         state_.ClearConversationLog();
-        state_.AddLogEntry(LogEntry::SYSTEM, "Conversation cleared");
+        state_.AddLogEntry(LogEntryType::SYSTEM, "Conversation cleared");
       } else if (cmd == "dump") {
         SPDLOG_DEBUG("Dump screen requested");
         DumpScreen();
@@ -511,19 +611,19 @@ public:
         state_.RequestExit();
       } else {
         SPDLOG_WARN("Unknown command: /{}", cmd);
-        state_.AddLogEntry(LogEntry::ERROR, "Unknown command: /" + cmd);
+        state_.AddLogEntry(LogEntryType::ERROR, "Unknown command: /" + cmd);
       }
     } else {
       // Non-slash commands go to chatbot
-      SPDLOG_INFO("Chatbot message: {}", command);
+      SPDLOG_INFO("Chatbot message: {}", trimmed_command);
       
       if (comm_mode_ == CommMode::IPC) {
         SPDLOG_INFO("Sending chat message to MCP server");
-        SendChatMessage(command);
-        state_.AddLogEntry(LogEntry::SYSTEM, "[Awaiting response...]");
+        SendChatMessage(trimmed_command);
+        state_.AddLogEntry(LogEntryType::SYSTEM, "[Awaiting response...]");
       } else {
         SPDLOG_INFO("In standalone mode - showing not implemented");
-        state_.AddLogEntry(LogEntry::RESPONSE, "Chat functionality requires connection to MCP server");
+        state_.AddLogEntry(LogEntryType::RESPONSE, "Chat functionality requires connection to MCP server");
       }
     }
   }
@@ -538,6 +638,8 @@ public:
     if (event.is_character()) {
       state_.ResetCtrlC();
     }
+    // Ctrl+N handling should be done in the Application's input component wrapper
+    // Not here in InputHandler
     
     return false;
   }
@@ -769,48 +871,53 @@ public:
     for (const auto& entry : log) {
       Element line;
       
-      // Format timestamp
-      auto time_t = std::chrono::system_clock::to_time_t(entry.timestamp);
-      char time_str[20];
-      std::strftime(time_str, sizeof(time_str), "%H:%M:%S", std::localtime(&time_t));
-      
-      switch (entry.type) {
-        case LogEntry::USER:
-          line = hbox({
-            text("[") | color(Colors::kGray),
-            text(time_str) | color(Colors::kGray),
-            text("] ") | color(Colors::kGray),
-            text("You: ") | bold | color(Colors::kCyan),
-            text(entry.content) | color(Colors::kGreen)
-          });
-          break;
-        case LogEntry::SYSTEM:
-          line = hbox({
-            text("[") | color(Colors::kGray),
-            text(time_str) | color(Colors::kGray),
-            text("] ") | color(Colors::kGray),
-            text("System: ") | bold | color(Colors::kPurple),
-            text(entry.content) | color(Colors::kDimGreen)
-          });
-          break;
-        case LogEntry::RESPONSE:
-          line = hbox({
-            text("[") | color(Colors::kGray),
-            text(time_str) | color(Colors::kGray),
-            text("] ") | color(Colors::kGray),
-            text("Assistant: ") | bold | color(Colors::kPink),
-            text(entry.content) | color(Colors::kGray)
-          });
-          break;
-        case LogEntry::ERROR:
-          line = hbox({
-            text("[") | color(Colors::kGray),
-            text(time_str) | color(Colors::kGray),
-            text("] ") | color(Colors::kGray),
-            text("Error: ") | bold | color(Colors::kHotPink),
-            text(entry.content) | color(Colors::kHotPink)
-          });
-          break;
+      // Special handling for empty content - just show a blank line
+      if (entry.content.empty()) {
+        line = text("");
+      } else {
+        // Format timestamp
+        auto time_t = std::chrono::system_clock::to_time_t(entry.timestamp);
+        char time_str[20];
+        std::strftime(time_str, sizeof(time_str), "%H:%M:%S", std::localtime(&time_t));
+        
+        switch (entry.type) {
+          case LogEntryType::USER:
+            line = hbox({
+              text("[") | color(Colors::kGray),
+              text(time_str) | color(Colors::kGray),
+              text("] ") | color(Colors::kGray),
+              text("You: ") | bold | color(Colors::kCyan),
+              paragraph(entry.content) | color(Colors::kGreen)
+            });
+            break;
+          case LogEntryType::SYSTEM:
+            line = hbox({
+              text("[") | color(Colors::kGray),
+              text(time_str) | color(Colors::kGray),
+              text("] ") | color(Colors::kGray),
+              text("System: ") | bold | color(Colors::kPurple),
+              paragraph(entry.content) | color(Colors::kDimGreen)
+            });
+            break;
+          case LogEntryType::RESPONSE:
+            line = hbox({
+              text("[") | color(Colors::kGray),
+              text(time_str) | color(Colors::kGray),
+              text("] ") | color(Colors::kGray),
+              text("Assistant: ") | bold | color(Colors::kPink),
+              paragraph(entry.content) | color(Colors::kGray)
+            });
+            break;
+          case LogEntryType::ERROR:
+            line = hbox({
+              text("[") | color(Colors::kGray),
+              text(time_str) | color(Colors::kGray),
+              text("] ") | color(Colors::kGray),
+              text("Error: ") | bold | color(Colors::kHotPink),
+              paragraph(entry.content) | color(Colors::kHotPink)
+            });
+            break;
+        }
       }
       
       log_lines.push_back(line);
@@ -896,12 +1003,14 @@ private:
   std::unique_ptr<UIRenderer> renderer_;
   std::unique_ptr<InputHandler> input_handler_;
   std::unique_ptr<MCPClient> mcp_client_;
+  int initial_focus = 2;
   
   ScreenInteractive screen_;
   Closure exit_closure_;
   
   std::string user_input_;
   Component input_component_;
+  Component send_button_;
   CommMode comm_mode_ = CommMode::STANDALONE;
 
 public:
@@ -922,8 +1031,53 @@ public:
     screen_.ForceHandleCtrlC(false);
     exit_closure_ = screen_.ExitLoopClosure();
     
-    // Create input component
-    input_component_ = Input(&user_input_, config_.inputPlaceholder);
+    // Create multiline input component
+    InputOption input_options;
+    input_options.placeholder = config_.inputPlaceholder;
+    input_options.multiline = true;  // Enable multiline mode
+    // NO on_enter callback - let Enter insert newlines naturally
+    
+    // Custom transform to keep colors unchanged when focused
+    input_options.transform = [](InputState state) {
+      state.element |= color(Colors::kGreen);  // Keep text green
+      
+      if (state.is_placeholder) {
+        state.element |= dim;
+      }
+      
+      // Don't change colors when focused - just show cursor
+      // The cursor will be automatically displayed by FTXUI
+      
+      return state.element;
+    };
+    
+    // Create the input component
+    auto raw_input = Input(&user_input_, input_options);
+    
+    // Wrap to handle Ctrl+N as send command
+    input_component_ = CatchEvent(raw_input, [this](Event event) {
+      if (event == Event::CtrlN) {
+        // Ctrl+N sends the message
+        if (!user_input_.empty()) {
+          SPDLOG_DEBUG("Ctrl+N pressed - sending message: {}", user_input_);
+          std::string command = user_input_;
+          user_input_.clear();
+          input_handler_->ProcessCommand(command);
+        }
+        return true;  // Consume Ctrl+N
+      }
+      return false;  // Let other events pass through (including Enter for newlines)
+    });
+    
+    // Create a clickable send button
+    send_button_ = Button("Send", [this] {
+      if (!user_input_.empty()) {
+        SPDLOG_DEBUG("Send button clicked: {}", user_input_);
+        std::string command = user_input_;
+        user_input_.clear();
+        input_handler_->ProcessCommand(command);
+      }
+    });
   }
 
   void SetCommMode(CommMode mode, const std::string& host = "127.0.0.1", int port = 4000) {
@@ -1006,12 +1160,18 @@ public:
       }) | border | color(Colors::kPurple);
     });
     
+    // Create input container with send button
+    auto input_container = Container::Horizontal({
+      input_component_,
+      send_button_
+    });
+    
     // Create vertical layout
     auto layout = Container::Vertical({
       header,
       middle,
-      input_component_
-    });
+      input_container
+    }, &initial_focus);
     
     // Final renderer that composes everything
     auto main_component = Renderer(layout, [this, &header, &middle, &scroll_position] {
@@ -1030,10 +1190,15 @@ public:
       return vbox({
         header->Render() | size(HEIGHT, EQUAL, 3),
         middle->Render() | flex,
+        text(""),  // Small gap
         hbox({
           text(" ▶ ") | color(Colors::kHotPink),
-          input_component_->Render() | color(Colors::kGreen)
-        }) | size(HEIGHT, EQUAL, 1)
+          input_component_->Render() | color(Colors::kGreen) | flex,
+          text(" ") | color(Colors::kPurple),
+          send_button_->Render(),
+          text(" ") | color(Colors::kPurple)
+        }) | border | color(Colors::kPurple) | bgcolor(Colors::kBackground),
+        text("")  // Bottom padding
       }) | bgcolor(Colors::kBackground);
     });
 
@@ -1044,17 +1209,8 @@ public:
         return true;
       }
       
-      // Handle Enter key
-      if (event == Event::Return && !user_input_.empty()) {
-        SPDLOG_DEBUG("Enter pressed with input: {}", user_input_);
-        std::string command = user_input_;
-        user_input_.clear();
-        
-        // Process command directly
-        input_handler_->ProcessCommand(command);
-        
-        return true;
-      }
+      // The Enter key handling is now done in the InputOption on_enter callback
+      // This allows the multiline input to properly handle Shift+Enter for newlines
       
       return false;
     });
