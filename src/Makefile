@@ -3,7 +3,7 @@ CXX      ?= g++
 CXXFLAGS += -std=c++20 -Wall -Wextra -pedantic
 
 # Include paths
-INCLUDES = -I../deps/simdjson -I../deps -I../deps/asio -I../deps/json_struct -I.
+INCLUDES = -I../deps/simdjson -I../deps -I../deps/asio -I../deps/json_struct -I../deps/atomic_queue -I.
 
 # Try pkg-config first, fall back to manual paths if needed
 PKG_CONFIG := pkg-config

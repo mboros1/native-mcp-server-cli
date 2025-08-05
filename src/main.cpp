@@ -5,9 +5,9 @@
 #include <spdlog/fmt/fmt.h>
 #include <spdlog/fmt/chrono.h>
 
-#include "concurrent_queue.hpp"
 #include "event.hpp"
 #include "tcp_client.hpp"
+#include <atomic_queue.h>
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -103,7 +103,7 @@ enum class CommMode {
 // ============================================================================
 class MCPClient {
 private:
-  ConcurrentQueue<AppEvent> event_queue_;
+  atomic_queue::AtomicQueueB2<AppEvent> event_queue_;
   std::unique_ptr<TcpClient> tcp_client_;
   std::thread event_processor_thread_;
   bool running_ = false;
@@ -112,7 +112,7 @@ private:
 
 public:
   MCPClient(const std::string& host = "127.0.0.1", int port = 4000) 
-    : host_(host), port_(port) {}
+    : event_queue_(1024), host_(host), port_(port) {}  // Initialize queue with 1024 elements
   
   ~MCPClient() {
     Stop();
@@ -173,7 +173,7 @@ private:
   void ProcessEvents() {
     while (running_) {
       AppEvent event;
-      if (event_queue_.pop(event, std::chrono::milliseconds(100))) {
+      if (event_queue_.try_pop(event)) {
         switch (event.type) {
           case EventType::Connected:
             SPDLOG_INFO("TCP connection established: {}", event.data);
@@ -191,6 +191,9 @@ private:
           default:
             break;
         }
+      } else {
+        // Sleep briefly if no events available
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
       }
     }
     SPDLOG_INFO("Event processor thread exiting");

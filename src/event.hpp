@@ -2,6 +2,7 @@
 
 #include <string>
 #include <variant>
+#include <atomic_queue.h>
 
 enum class EventType {
     // Connection events
@@ -26,4 +27,4 @@ struct AppEvent {
     std::string data;
 };
 
-using AppEventQueue = ConcurrentQueue<AppEvent>;
+using AppEventQueue = atomic_queue::AtomicQueueB2<AppEvent>;

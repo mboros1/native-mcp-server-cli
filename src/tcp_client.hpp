@@ -6,12 +6,12 @@
 #include <memory>
 #include <string>
 #include <functional>
-#include "concurrent_queue.hpp"
 #include "event.hpp"
+#include <atomic_queue.h>
 
 class TcpClient {
 public:
-    TcpClient(ConcurrentQueue<AppEvent>& event_queue)
+    TcpClient(atomic_queue::AtomicQueueB2<AppEvent>& event_queue)
         : event_queue_(event_queue),
           io_context_(),
           socket_(io_context_),
@@ -73,7 +73,7 @@ private:
                 io_context_.run();
             } catch (const std::exception& e) {
                 connected_ = false;
-                event_queue_.push(AppEvent{EventType::ConnectionLost, "Connection error: " + std::string(e.what())});
+                event_queue_.try_push(AppEvent{EventType::ConnectionLost, "Connection error: " + std::string(e.what())});
             }
             
             if (!running_) break;
@@ -88,10 +88,10 @@ private:
             [this](std::error_code ec, asio::ip::tcp::endpoint) {
                 if (!ec) {
                     connected_ = true;
-                    event_queue_.push(AppEvent{EventType::Connected, "Connected to server"});
+                    event_queue_.try_push(AppEvent{EventType::Connected, "Connected to server"});
                     do_read();
                 } else {
-                    event_queue_.push(AppEvent{EventType::ConnectionFailed, "Failed to connect: " + ec.message()});
+                    event_queue_.try_push(AppEvent{EventType::ConnectionFailed, "Failed to connect: " + ec.message()});
                     schedule_reconnect();
                 }
             });
@@ -117,11 +117,11 @@ private:
                     std::string line;
                     std::getline(stream, line);
                     
-                    event_queue_.push(AppEvent{EventType::MessageReceived, line});
+                    event_queue_.try_push(AppEvent{EventType::MessageReceived, line});
                     do_read();
                 } else {
                     connected_ = false;
-                    event_queue_.push(AppEvent{EventType::ConnectionLost, "Read error: " + ec.message()});
+                    event_queue_.try_push(AppEvent{EventType::ConnectionLost, "Read error: " + ec.message()});
                     socket_.close();
                     schedule_reconnect();
                 }
@@ -138,14 +138,14 @@ private:
                     }
                 } else {
                     connected_ = false;
-                    event_queue_.push(AppEvent{EventType::ConnectionLost, "Write error: " + ec.message()});
+                    event_queue_.try_push(AppEvent{EventType::ConnectionLost, "Write error: " + ec.message()});
                     socket_.close();
                     schedule_reconnect();
                 }
             });
     }
 
-    ConcurrentQueue<AppEvent>& event_queue_;
+    atomic_queue::AtomicQueueB2<AppEvent>& event_queue_;
     asio::io_context io_context_;
     asio::ip::tcp::socket socket_;
     asio::steady_timer reconnect_timer_;
