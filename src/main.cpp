@@ -291,7 +291,6 @@ private:
   std::vector<LogEntry> conversation_log_;
   Tool* selected_tool_ = nullptr;
   int max_history_size_ = 100;
-  int scroll_position_ = 0;
 
 public:
   // Clean interface for state transitions
@@ -382,18 +381,14 @@ public:
     // Write to persistent log file
     WriteToLogFile(entry);
     
-    // Auto-scroll to bottom when new entry is added
-    scroll_position_ = std::max(0, static_cast<int>(conversation_log_.size()) - 10);
+    // New entry added - ConversationLog component handles scrolling
   }
   
   const std::vector<LogEntry>& GetConversationLog() const { return conversation_log_; }
   
   void ClearConversationLog() { conversation_log_.clear(); }
   
-  int GetScrollPosition() const { return scroll_position_; }
-  void SetScrollPosition(int pos) { 
-    scroll_position_ = std::max(0, std::min(pos, static_cast<int>(conversation_log_.size()) - 1));
-  }
+  // Scroll position is now handled by ConversationLog component
 
 private:
   void WriteToLogFile(const LogEntry& entry) {
@@ -418,6 +413,64 @@ private:
 };
 
 // ============================================================================
+// ConversationLog Manager - Handles scroll state for conversation display
+// ============================================================================
+class ConversationLogManager {
+public:
+  float scroll_y_ = 1.0f;  // Start at bottom (1.0 = 100% scrolled down)
+  bool auto_scroll_ = true; // Auto-scroll to bottom on new messages
+  
+  void OnNewMessage() {
+    // Called when a new message is added
+    if (auto_scroll_) {
+      scroll_y_ = 1.0f;  // Scroll to bottom
+    }
+  }
+  
+  bool HandleScrollEvent(Event event) {
+    // Handle mouse wheel scrolling
+    if (event.is_mouse() && event.mouse().button == Mouse::WheelUp) {
+      scroll_y_ = std::max(0.0f, scroll_y_ - 0.1f);  // Scroll up
+      auto_scroll_ = (scroll_y_ >= 0.99f);  // Re-enable auto-scroll if at bottom
+      return true;
+    }
+    
+    if (event.is_mouse() && event.mouse().button == Mouse::WheelDown) {
+      scroll_y_ = std::min(1.0f, scroll_y_ + 0.1f);  // Scroll down
+      auto_scroll_ = (scroll_y_ >= 0.99f);  // Re-enable auto-scroll if at bottom
+      return true;
+    }
+    
+    // Handle keyboard scrolling
+    if (event == Event::ArrowUp || event == Event::PageUp) {
+      scroll_y_ = std::max(0.0f, scroll_y_ - 0.1f);
+      auto_scroll_ = (scroll_y_ >= 0.99f);
+      return true;
+    }
+    
+    if (event == Event::ArrowDown || event == Event::PageDown) {
+      scroll_y_ = std::min(1.0f, scroll_y_ + 0.1f);
+      auto_scroll_ = (scroll_y_ >= 0.99f);
+      return true;
+    }
+    
+    if (event == Event::Home) {
+      scroll_y_ = 0.0f;
+      auto_scroll_ = false;
+      return true;
+    }
+    
+    if (event == Event::End) {
+      scroll_y_ = 1.0f;
+      auto_scroll_ = true;
+      return true;
+    }
+    
+    return false;
+  }
+};
+
+// ============================================================================
 // Input Handler - Processes user input and updates state
 // ============================================================================
 class InputHandler {
@@ -425,6 +478,7 @@ private:
   StateManager& state_;
   std::vector<Tool>& tools_;
   UIRenderer* renderer_ = nullptr;
+  ConversationLogManager* log_manager_ = nullptr;
   CommMode comm_mode_ = CommMode::STANDALONE;
   MCPClient* mcp_client_ = nullptr;
   int message_id_ = 0;
@@ -439,6 +493,13 @@ private:
   }
   
   void DumpScreen();
+  
+  void AddLogEntryWithNotification(LogEntryType type, const std::string& content) {
+    state_.AddLogEntry(type, content);
+    if (log_manager_) {
+      log_manager_->OnNewMessage();
+    }
+  }
 
 public:
   InputHandler(StateManager& state, std::vector<Tool>& tools) 
@@ -446,6 +507,10 @@ public:
     
   void SetRenderer(UIRenderer* renderer) {
     renderer_ = renderer;
+  }
+  
+  void SetLogManager(ConversationLogManager* manager) {
+    log_manager_ = manager;
   }
   
   void SetCommMode(CommMode mode) {
@@ -538,7 +603,7 @@ public:
     state_.AddToHistory(trimmed_command);
     
     // Add user input to log
-    state_.AddLogEntry(LogEntryType::USER, trimmed_command);
+    AddLogEntryWithNotification(LogEntryType::USER, trimmed_command);
     
     // Check if it's a slash command
     if (trimmed_command[0] == '/') {
@@ -561,26 +626,26 @@ public:
           "  Ctrl+C   - Press twice to exit\n"
           "\n"
           "Type any message without a slash to chat.";
-        state_.AddLogEntry(LogEntryType::SYSTEM, help_text);
+        AddLogEntryWithNotification(LogEntryType::SYSTEM, help_text);
       } else if (cmd == "tools") {
         SPDLOG_DEBUG("Listing MCP tools");
         if (comm_mode_ == CommMode::IPC) {
           if (!mcp_client_ || !mcp_client_->IsConnected()) {
             SPDLOG_ERROR("MCP server not connected");
-            state_.AddLogEntry(LogEntryType::ERROR, "Cannot list tools: MCP server not connected");
+            AddLogEntryWithNotification(LogEntryType::ERROR, "Cannot list tools: MCP server not connected");
           } else {
             SendMCPRequest("tools/list", "{}");
-            state_.AddLogEntry(LogEntryType::SYSTEM, "Requesting tool list...");
+            AddLogEntryWithNotification(LogEntryType::SYSTEM, "Requesting tool list...");
           }
         } else {
-          state_.AddLogEntry(LogEntryType::SYSTEM, "No tools available in standalone mode");
+          AddLogEntryWithNotification(LogEntryType::SYSTEM, "No tools available in standalone mode");
         }
       } else if (cmd == "servers") {
         SPDLOG_DEBUG("Showing connected servers");
         if (mcp_client_ && mcp_client_->IsConnected()) {
-          state_.AddLogEntry(LogEntryType::SYSTEM, "Connected to TCP server at 127.0.0.1:4000");
+          AddLogEntryWithNotification(LogEntryType::SYSTEM, "Connected to TCP server at 127.0.0.1:4000");
         } else {
-          state_.AddLogEntry(LogEntryType::SYSTEM, "No servers connected");
+          AddLogEntryWithNotification(LogEntryType::SYSTEM, "No servers connected");
         }
       } else if (cmd.substr(0, 4) == "use ") {
         // Parse /use <tool> [args]
@@ -596,13 +661,13 @@ public:
         SPDLOG_DEBUG("Executing MCP tool: {} with args: {}", toolName, args);
         if (comm_mode_ == CommMode::IPC) {
           SendToolCall(toolName, args);
-          state_.AddLogEntry(LogEntryType::SYSTEM, "Executing tool: " + toolName);
+          AddLogEntryWithNotification(LogEntryType::SYSTEM, "Executing tool: " + toolName);
         } else {
-          state_.AddLogEntry(LogEntryType::ERROR, "Tool execution not available in standalone mode");
+          AddLogEntryWithNotification(LogEntryType::ERROR, "Tool execution not available in standalone mode");
         }
       } else if (cmd == "clear") {
         state_.ClearConversationLog();
-        state_.AddLogEntry(LogEntryType::SYSTEM, "Conversation cleared");
+        AddLogEntryWithNotification(LogEntryType::SYSTEM, "Conversation cleared");
       } else if (cmd == "dump") {
         SPDLOG_DEBUG("Dump screen requested");
         DumpScreen();
@@ -611,7 +676,7 @@ public:
         state_.RequestExit();
       } else {
         SPDLOG_WARN("Unknown command: /{}", cmd);
-        state_.AddLogEntry(LogEntryType::ERROR, "Unknown command: /" + cmd);
+        AddLogEntryWithNotification(LogEntryType::ERROR, "Unknown command: /" + cmd);
       }
     } else {
       // Non-slash commands go to chatbot
@@ -620,10 +685,10 @@ public:
       if (comm_mode_ == CommMode::IPC) {
         SPDLOG_INFO("Sending chat message to MCP server");
         SendChatMessage(trimmed_command);
-        state_.AddLogEntry(LogEntryType::SYSTEM, "[Awaiting response...]");
+        AddLogEntryWithNotification(LogEntryType::SYSTEM, "[Awaiting response...]");
       } else {
         SPDLOG_INFO("In standalone mode - showing not implemented");
-        state_.AddLogEntry(LogEntryType::RESPONSE, "Chat functionality requires connection to MCP server");
+        AddLogEntryWithNotification(LogEntryType::RESPONSE, "Chat functionality requires connection to MCP server");
       }
     }
   }
@@ -1011,6 +1076,8 @@ private:
   std::string user_input_;
   Component input_component_;
   Component send_button_;
+  Component conversation_log_;
+  ConversationLogManager log_manager_;
   CommMode comm_mode_ = CommMode::STANDALONE;
 
 public:
@@ -1026,6 +1093,84 @@ public:
     renderer_ = std::make_unique<UIRenderer>(config_, state_, config_.tools);
     input_handler_ = std::make_unique<InputHandler>(state_, config_.tools);
     input_handler_->SetRenderer(renderer_.get());
+    input_handler_->SetLogManager(&log_manager_);
+    
+    // Create conversation log component using Renderer
+    auto conversation_log_renderer = Renderer([this] {
+      Elements log_elements;
+      const auto& log = state_.GetConversationLog();
+      
+      // Render all log entries
+      for (const auto& entry : log) {
+        Element line;
+        
+        // Format timestamp
+        auto time_t = std::chrono::system_clock::to_time_t(entry.timestamp);
+        char time_str[20];
+        std::strftime(time_str, sizeof(time_str), "%H:%M:%S", std::localtime(&time_t));
+        
+        switch (entry.type) {
+          case LogEntryType::USER:
+            line = hbox({
+              text("[") | color(Colors::kGray),
+              text(time_str) | color(Colors::kGray),
+              text("] ") | color(Colors::kGray),
+              text("You: ") | bold | color(Colors::kCyan),
+              paragraph(entry.content) | color(Colors::kGreen)
+            });
+            break;
+          case LogEntryType::SYSTEM:
+            line = hbox({
+              text("[") | color(Colors::kGray),
+              text(time_str) | color(Colors::kGray),
+              text("] ") | color(Colors::kGray),
+              text("System: ") | bold | color(Colors::kPurple),
+              paragraph(entry.content) | color(Colors::kDimGreen)
+            });
+            break;
+          case LogEntryType::RESPONSE:
+            line = hbox({
+              text("[") | color(Colors::kGray),
+              text(time_str) | color(Colors::kGray),
+              text("] ") | color(Colors::kGray),
+              text("Assistant: ") | bold | color(Colors::kPink),
+              paragraph(entry.content) | color(Colors::kGray)
+            });
+            break;
+          case LogEntryType::ERROR:
+            line = hbox({
+              text("[") | color(Colors::kGray),
+              text(time_str) | color(Colors::kGray),
+              text("] ") | color(Colors::kGray),
+              text("Error: ") | bold | color(Colors::kHotPink),
+              paragraph(entry.content) | color(Colors::kHotPink)
+            });
+            break;
+        }
+        
+        log_elements.push_back(line);
+      }
+      
+      // If empty, show placeholder
+      if (log_elements.empty()) {
+        log_elements.push_back(
+          text("Welcome! Type a message or use /help for available commands.") 
+          | color(Colors::kGray) | center
+        );
+      }
+      
+      // Create the scrollable log with proper relative positioning
+      return vbox(std::move(log_elements))
+           | focusPositionRelative(0.0f, log_manager_.scroll_y_)  // Use relative positioning
+           | frame
+           | flex
+           | vscroll_indicator;
+    });
+    
+    // Wrap with event handler for scrolling
+    conversation_log_ = CatchEvent(conversation_log_renderer, [this](Event event) {
+      return log_manager_.HandleScrollEvent(event);
+    });
     
     // Setup screen
     screen_.ForceHandleCtrlC(false);
@@ -1097,49 +1242,7 @@ public:
   }
 
   void Run() {
-    int scroll_position = 0;
-    
-    // Create scrollable middle area
-    auto middle_renderer = Renderer([this, &scroll_position] {
-      // Update connection status
-      if (mcp_client_) {
-        renderer_->SetConnectionStatus(mcp_client_->IsConnected());
-      }
-      
-      // Get conversation log
-      auto log_content = renderer_->RenderConversationLog();
-      
-      // Apply scroll position
-      return log_content 
-        | frame 
-        | focusPosition(0, scroll_position)
-        | vscroll_indicator 
-        | flex;
-    });
-    
-    // Catch events for scrolling
-    auto middle = CatchEvent(middle_renderer, [this, &scroll_position](Event event) {
-      const auto& log = state_.GetConversationLog();
-      int max_scroll = std::max(0, static_cast<int>(log.size()) - 10);
-      
-      if (event == Event::ArrowUp || event == Event::PageUp) {
-        scroll_position = std::max(0, scroll_position - 1);
-        return true;
-      }
-      if (event == Event::ArrowDown || event == Event::PageDown) {
-        scroll_position = std::min(max_scroll, scroll_position + 1);
-        return true;
-      }
-      if (event == Event::Home) {
-        scroll_position = 0;
-        return true;
-      }
-      if (event == Event::End) {
-        scroll_position = max_scroll;
-        return true;
-      }
-      return false;
-    });
+    // The conversation log component now handles scrolling internally
     
     // Create header
     auto header = Renderer([this] {
@@ -1169,27 +1272,21 @@ public:
     // Create vertical layout
     auto layout = Container::Vertical({
       header,
-      middle,
+      conversation_log_,
       input_container
     }, &initial_focus);
     
     // Final renderer that composes everything
-    auto main_component = Renderer(layout, [this, &header, &middle, &scroll_position] {
+    auto main_component = Renderer(layout, [this, &header] {
       // Check exit condition
       if (state_.IsExitRequested()) {
         state_.ConfirmExit();
         screen_.Post([this] { exit_closure_(); });
       }
       
-      // Auto-scroll to bottom on new messages
-      const auto& log = state_.GetConversationLog();
-      if (!log.empty()) {
-        scroll_position = std::max(0, static_cast<int>(log.size()) - 10);
-      }
-      
       return vbox({
         header->Render() | size(HEIGHT, EQUAL, 3),
-        middle->Render() | flex,
+        conversation_log_->Render() | flex,
         text(""),  // Small gap
         hbox({
           text(" ▶ ") | color(Colors::kHotPink),
