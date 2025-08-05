@@ -244,6 +244,21 @@ private:
         } else if (type == "sync_response") {
           // Pass sync response to callback for processing
           response_callback_("SYNC", message);
+        } else if (type == "timeout_error") {
+          // Handle timeout errors with retry capability
+          if (doc["message"].is_string() && doc["canRetry"].is_bool() && doc["originalMessage"].is_string()) {
+            std::string timeout_msg = std::string(doc["message"].get_string().value());
+            bool can_retry = doc["canRetry"].get_bool().value();
+            std::string original_msg = std::string(doc["originalMessage"].get_string().value());
+            
+            SPDLOG_ERROR("Received timeout from server: {}", timeout_msg);
+            
+            if (can_retry) {
+              response_callback_("TIMEOUT_WITH_RETRY", timeout_msg + "|" + original_msg);
+            } else {
+              response_callback_("ERROR", "Timeout: " + timeout_msg);
+            }
+          }
         } else if (type == "error") {
           if (doc["message"].is_string()) {
             std::string error_msg = std::string(doc["message"].get_string().value());
@@ -370,6 +385,11 @@ private:
   Tool* selected_tool_ = nullptr;
   int max_history_size_ = 100;
   int max_log_size_ = 10000;  // Maximum number of log entries to keep in memory
+  
+  // Retry functionality
+  bool retry_available_ = false;
+  std::string retry_message_;
+  std::string retry_original_message_;
   
   // Token counting
   std::atomic<size_t> total_context_tokens_{0};
@@ -511,12 +531,40 @@ public:
   
   // Scroll position is now handled by ConversationLog component
   
+  // Retry functionality
+  void SetRetryAvailable(const std::string& timeout_msg, const std::string& original_msg) {
+    retry_available_ = true;
+    retry_message_ = timeout_msg;
+    retry_original_message_ = original_msg;
+  }
+  
+  void ClearRetry() {
+    retry_available_ = false;
+    retry_message_.clear();
+    retry_original_message_.clear();
+  }
+  
+  bool IsRetryAvailable() const {
+    return retry_available_;
+  }
+  
+  std::string GetRetryMessage() const {
+    return retry_message_;
+  }
+  
+  std::string GetRetryOriginalMessage() const {
+    return retry_original_message_;
+  }
+
   std::string GetStatusMessage(bool has_input_text) const {
     if (IsCtrlCPending()) {
       return "Press Ctrl+C again to exit";
     }
     if (IsEscPending()) {
       return "Press Esc again to clear the input";
+    }
+    if (retry_available_) {
+      return "Click 'Retry' to resend the last message, or continue typing normally";
     }
     if (has_input_text) {
       return "Hit Ctrl+N or click 'Send' to submit";
@@ -874,6 +922,27 @@ public:
       
       SPDLOG_INFO("Loaded {} chat history entries with {} total tokens", loaded_count, total_tokens);
       
+      // Check if last message is from user (incomplete conversation)
+      // Look through the event_log deque from the end to find the last user message
+      std::string last_user_message;
+      bool found_incomplete = false;
+      
+      for (auto it = event_log_.rbegin(); it != event_log_.rend(); ++it) {
+        if (it->type == LogEntryType::USER) {
+          last_user_message = it->content;
+          found_incomplete = true;
+          break;
+        } else if (it->type == LogEntryType::RESPONSE) {
+          // Found a response before a user message, conversation is complete
+          break;
+        }
+      }
+      
+      if (found_incomplete && !last_user_message.empty()) {
+        SPDLOG_INFO("Detected incomplete conversation - last user message: {}", last_user_message.substr(0, 50));
+        SetRetryAvailable("Incomplete conversation detected - last message was not responded to", last_user_message);
+      }
+      
     } catch (const std::exception& e) {
       SPDLOG_ERROR("Error loading chat history: {}", e.what());
     }
@@ -1195,6 +1264,31 @@ public:
     mcp_client_ = client;
   }
   
+  void SendRetryRequest() {
+    if (!state_.IsRetryAvailable()) {
+      SPDLOG_WARN("No retry available");
+      return;
+    }
+    
+    if (comm_mode_ != CommMode::IPC || !mcp_client_ || !mcp_client_->IsConnected()) {
+      AddLogEntryWithNotification(LogEntryType::ERROR, "Cannot retry - not connected to server");
+      return;
+    }
+    
+    std::string original_message = state_.GetRetryOriginalMessage();
+    SPDLOG_INFO("Sending retry request for message: {}", original_message);
+    
+    // Send retry request to server with the exact message to retry
+    std::stringstream json;
+    json << "{\"type\":\"retry\",\"originalMessage\":\"" << EscapeJSON(original_message) << "\"}";
+    mcp_client_->SendRequest(json.str());
+    
+    // Clear retry state and add log entry
+    state_.ClearRetry();
+    AddLogEntryWithNotification(LogEntryType::SYSTEM, "Retrying: " + original_message);
+    AddLogEntryWithNotification(LogEntryType::SYSTEM, "[Awaiting response...]");
+  }
+  
   void SendChatMessage(const std::string& message) {
     SPDLOG_INFO("SendChatMessage called with: {}", message);
     
@@ -1278,6 +1372,9 @@ public:
     
     // Add user input to log
     AddLogEntryWithNotification(LogEntryType::USER, trimmed_command);
+    
+    // Clear any retry state when new command is entered
+    state_.ClearRetry();
     
     // Check if it's a slash command
     if (trimmed_command[0] == '/') {
@@ -1784,6 +1881,7 @@ private:
   std::string user_input_;
   Component input_with_history_;
   Component send_button_;
+  Component retry_button_;
   Component event_log_;
   ConversationLogManager log_manager_;
   CommMode comm_mode_ = CommMode::STANDALONE;
@@ -1975,6 +2073,12 @@ public:
         input_handler_->ProcessCommand(command);
       }
     });
+    
+    // Create retry button (🔄 is a red retry icon-like symbol)
+    retry_button_ = Button("🔄 Retry", [this] {
+      SPDLOG_DEBUG("Retry button clicked");
+      input_handler_->SendRetryRequest();
+    });
   }
 
   void SetCommMode(CommMode mode, const std::string& host = "127.0.0.1", int port = 4000) {
@@ -2037,6 +2141,19 @@ public:
             } catch (const std::exception& e) {
               input_handler_->AddLogEntryWithNotification(LogEntryType::ERROR, "Sync check failed: " + std::string(e.what()));
             }
+          } else if (type == "TIMEOUT_WITH_RETRY") {
+            // Parse timeout message and original message
+            size_t delimiter_pos = content.find("|");
+            if (delimiter_pos != std::string::npos) {
+              std::string timeout_msg = content.substr(0, delimiter_pos);
+              std::string original_msg = content.substr(delimiter_pos + 1);
+              
+              // Set retry state
+              state_.SetRetryAvailable(timeout_msg, original_msg);
+              
+              // Add timeout message to log
+              input_handler_->AddLogEntryWithNotification(LogEntryType::ERROR, timeout_msg);
+            }
           } else if (type == "ERROR") {
             input_handler_->AddLogEntryWithNotification(LogEntryType::ERROR, content);
           }
@@ -2076,10 +2193,11 @@ public:
       }) | border | color(Colors::kPurple);
     });
     
-    // Create input container with send button
+    // Create input container - conditionally include retry button
     auto input_container = Container::Horizontal({
       input_with_history_,
-      send_button_
+      send_button_,
+      retry_button_
     });
     
     // Create vertical layout
@@ -2111,6 +2229,8 @@ public:
           input_with_history_->Render() | color(Colors::kGreen) | flex,
           text(" ") | color(Colors::kPurple),
           send_button_->Render(),
+          state_.IsRetryAvailable() ? text(" ") | color(Colors::kPurple) : text(""),
+          state_.IsRetryAvailable() ? retry_button_->Render() | color(Colors::kHotPink) : text(""),
           text(" ") | color(Colors::kPurple)
         }) | border | color(Colors::kPurple) | bgcolor(Colors::kBackground),
         status_line,
