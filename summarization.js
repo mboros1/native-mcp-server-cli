@@ -55,10 +55,23 @@ class ConversationSummarizer {
   async makeOpenAICall(model, messages, maxTokens = null, temperature = 0.7) {
     const payload = {
       model,
-      messages,
-      temperature,
-      ...(maxTokens && { max_tokens: maxTokens })
+      messages
     };
+    
+    // o4-mini and other reasoning models have specific parameter requirements
+    if (model.includes('o4')) {
+      // o4 models only support temperature=1 and max_completion_tokens only
+      payload.temperature = 1;
+      if (maxTokens) {
+        payload.max_completion_tokens = maxTokens;  // Limit visible output tokens only
+      }
+    } else {
+      // Standard models support custom temperature and use max_tokens
+      payload.temperature = temperature;
+      if (maxTokens) {
+        payload.max_tokens = maxTokens;
+      }
+    }
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
@@ -287,7 +300,8 @@ Create the final enhanced summary:`
       'gpt-4.1-mini': { input: 0.40, output: 1.60 },
       'gpt-4.1-nano': { input: 0.10, output: 0.40 },
       'gpt-4o-mini': { input: 0.15, output: 0.60 },
-      'gpt-4o': { input: 2.50, output: 10.00 }
+      'gpt-4o': { input: 2.50, output: 10.00 },
+      'o4-mini': { input: 1.10, output: 4.40 }  // Reasoning model pricing
     };
     
     const modelPricing = pricing[model] || pricing['gpt-4o-mini'];
