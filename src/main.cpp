@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <set>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <cstring>
@@ -1261,7 +1262,12 @@ private:
 // Input Handler - Processes user input and updates state
 // ============================================================================
 class InputHandler {
+public:
+  const std::string& model()  const { return current_model_;  }
+  const std::string& effort() const { return current_effort_; }
 private:
+  std::string current_model_  = "kimi";           // kimi | o3
+  std::string current_effort_ = "medium";         // minimal | low | medium | high
   StateManager& state_;
   std::vector<Tool>& tools_;
   UIRenderer* renderer_ = nullptr;
@@ -1413,6 +1419,8 @@ public:
     std::stringstream json;
     json << "{\"type\":\"chat\",\"id\":" << ++message_id_ 
          << ",\"content\":\"" << EscapeJSON(message) << "\""
+         << ",\"model\":\"" << current_model_ << "\""
+         << ",\"reasoning_effort\":\"" << current_effort_ << "\""
          << ",\"timeout\":" << timeout_ms << "}";
     
     SPDLOG_INFO("Sending chat JSON: {}", json.str());
@@ -1487,6 +1495,85 @@ public:
     // Check if it's a slash command
     if (trimmed_command[0] == '/') {
       std::string cmd = trimmed_command.substr(1); // Remove the '/'
+
+      if (cmd == "model" || cmd.rfind("model ", 0) == 0) {
+        if (cmd == "model") {
+          // Show available models and usage
+          std::string model_info = 
+            "🤖 Model Selection\n"
+            "\n"
+            "Current: " + current_model_ + " (reasoning: " + current_effort_ + ")\n"
+            "\n"
+            "Available Models:\n"
+            "  • kimi - Kimi K2 (fast, cost-effective)\n"
+            "  • o3   - OpenAI o3 (reasoning model with thinking tokens)\n"
+            "\n"
+            "Usage:\n"
+            "  /model kimi  - Switch to Kimi K2\n"
+            "  /model o3    - Switch to OpenAI o3\n"
+            "  /think <lvl> - Set reasoning effort (o3 only)\n"
+            "\n"
+            "Reasoning Levels:\n"
+            "  minimal, low, medium, high";
+          state_.AddLogEntry(LogEntryType::SYSTEM, model_info);
+        } else {
+          // Set new model
+          std::string m = cmd.substr(6);
+          if (m == "kimi" || m == "o3") {
+            current_model_ = m;
+            state_.AddLogEntry(LogEntryType::SYSTEM,
+                               "Model switched to «" + m + "»");
+          } else {
+            state_.AddLogEntry(LogEntryType::ERROR,
+                               "Unknown model: " + m + "  (use kimi | o3)");
+          }
+        }
+        return;
+      }
+
+      if (cmd == "think" || cmd.rfind("think ", 0) == 0) {
+        if (cmd == "think") {
+          // Show reasoning effort options
+          std::string think_info = 
+            "🧠 Reasoning Effort (OpenAI o3)\n"
+            "\n"
+            "Current: " + current_effort_ + " (model: " + current_model_ + ")\n"
+            "\n"
+            "Available Levels:\n"
+            "  • minimal - Fast, basic reasoning\n"
+            "  • low     - Light reasoning effort\n"
+            "  • medium  - Balanced reasoning (default)\n"
+            "  • high    - Deep reasoning, more thinking tokens\n"
+            "\n"
+            "Usage:\n"
+            "  /think minimal  - Set minimal effort\n"
+            "  /think low      - Set low effort\n"
+            "  /think medium   - Set medium effort\n"
+            "  /think high     - Set high effort\n"
+            "\n"
+            "Note: Only affects o3 model. Use /model o3 first.";
+          state_.AddLogEntry(LogEntryType::SYSTEM, think_info);
+        } else {
+          // Set new effort
+          std::string e = cmd.substr(6);
+          static const std::set<std::string> ok =
+              {"minimal","low","medium","high"};
+          if (ok.count(e)) {
+            current_effort_ = e;
+            state_.AddLogEntry(LogEntryType::SYSTEM,
+                               "Reasoning effort set to «" + e + "»");
+            if (current_model_ != "o3") {
+              state_.AddLogEntry(LogEntryType::SYSTEM,
+                                 "Note: Reasoning effort only affects o3 model. Current: " + current_model_);
+            }
+          } else {
+            state_.AddLogEntry(LogEntryType::ERROR,
+                               "Bad effort: " + e +
+                               "  (use minimal | low | medium | high)");
+          }
+        }
+        return;
+      }
       
       if (cmd == "help" || cmd == "h") {
         SPDLOG_DEBUG("Showing help");
@@ -1494,6 +1581,8 @@ public:
           "Available commands:\n"
           "\n"
           "  /help    - Show this help\n"
+          "  /model <kimi|o3>    → choose back-end model\n"
+          "  /think <lvl>        → minimal | low | medium | high\n"
           "  /tools   - List available tools\n"
           "  /servers - Show connected servers\n"
           "  /clear   - Clear conversation history\n"

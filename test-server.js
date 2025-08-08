@@ -18,6 +18,56 @@ const moonshot = axios.create({
   },
 });
 
+// --- new: openai axios instance ---------------------------------
+const openai = axios.create({
+  baseURL: 'https://api.openai.com',
+  timeout: 5 * 60_000,
+  headers: {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+  },
+});
+
+
+// --- new: registry ----------------------------------------------
+// +/** @typedef {'kimi' | 'o3'} ModelKey */   // simple typedef for JSDoc users
+const MODEL_REGISTRY = Object.freeze({
+  kimi: {
+    id: 'kimi-k2',
+    client: moonshot,
+    endpoint: '/v1/chat/completions',
+    extraParams: { temperature: 0.3, max_tokens: 1024 },
+    formatRequest: (messages, params) => ({
+      model: 'kimi-k2',
+      messages,
+      ...params
+    })
+  },
+  o3: {
+    id: 'o3',
+    client: openai,
+    endpoint: '/v1/responses',
+    extraParams: {
+      max_output_tokens: 1024,
+      reasoning: { effort: process.env.O3_REASONING_EFFORT ?? 'medium' },
+    },
+    formatRequest: (messages, params, reasoning_effort) => {
+      // Convert chat messages to simple string for o3 responses API
+      const inputText = messages.map(msg => `${msg.role}: ${msg.content}`).join('\n\n');
+      return {
+        model: 'o3',
+        input: inputText,
+        text: { format: { type: 'text' } },
+        reasoning: { 
+          effort: reasoning_effort || params.reasoning?.effort || 'medium' 
+        },
+        max_output_tokens: params.max_output_tokens
+      };
+    }
+  },
+});
+
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Create .data directory if it doesn't exist
@@ -113,7 +163,7 @@ function rotateChatHistory() {
 }
 
 // Main chat processing function with timeout handling
-async function processChatMessage(socket, clientId, messageContent, clientTimeout = null) {
+async function processChatMessage(socket, clientId, messageContent, clientTimeout = null, modelKey = 'kimi', reasoning_effort = null) {
     // Check if client is already processing a message
     if (isClientProcessing(clientId)) {
         socket.write(JSON.stringify({
@@ -147,7 +197,13 @@ async function processChatMessage(socket, clientId, messageContent, clientTimeou
         // Use client-provided timeout or default to 5 minutes
         const timeoutMs = clientTimeout || (5 * 60 * 1000);
         
-        log(`Making API request to Kimi K2 with: ${messageContent}`);
+        // Get model configuration from registry
+        const modelConfig = MODEL_REGISTRY[modelKey];
+        if (!modelConfig) {
+            throw new Error(`Unknown model: ${modelKey}`);
+        }
+        
+        log(`Making API request to ${modelConfig.id} with: ${messageContent}`);
         log(`DEBUG: Starting request for ${clientId}, signal.aborted = ${signal.aborted}`);
         
         // Check if already aborted before making request
@@ -156,15 +212,13 @@ async function processChatMessage(socket, clientId, messageContent, clientTimeou
             throw new Error('Request was aborted');
         }
         
-        const { data: resp } = await moonshot.post('/v1/chat/completions', {
-            model: 'kimi-k2',
-            messages,
-            temperature: 0.3,
-            max_tokens: 1024,
-            signal // Pass abort signal to axios
+        // Build request parameters using model-specific formatter
+        const requestParams = modelConfig.formatRequest(messages, modelConfig.extraParams, reasoning_effort);
+        
+        const { data: resp } = await modelConfig.client.post(modelConfig.endpoint, requestParams, {
+            signal, // Pass abort signal to axios
+            timeout: timeoutMs
         });
-
-        log(`DEBUG: Request completed for ${clientId}, signal.aborted = ${signal.aborted}`);
         
         // Check if the request was cancelled while in progress
         if (signal.aborted) {
@@ -176,7 +230,16 @@ async function processChatMessage(socket, clientId, messageContent, clientTimeou
             return;
         }
         
-        const replyText = resp.choices[0].message.content;
+        // Parse response based on model type
+        let replyText;
+        if (modelKey === 'o3') {
+            // OpenAI responses API format: find the message item in output array
+            const messageItem = resp.output?.find(item => item.type === 'message');
+            replyText = messageItem?.content?.[0]?.text || 'No response content';
+        } else {
+            // Traditional chat completions format (Kimi)
+            replyText = resp.choices[0].message.content;
+        }
         
         // Add assistant response to in-memory history (C++ will write to file when it receives response)
         addToMemoryHistory('assistant', replyText);
@@ -282,7 +345,7 @@ function handleInterrupt(socket, clientId) {
 }
 
 // Handle retry requests
-async function handleRetryRequest(socket, clientId, originalMessage) {
+async function handleRetryRequest(socket, clientId, originalMessage, modelKey = 'kimi', reasoning_effort = null) {
     // If no original message provided, try to find last user message from chat history
     if (!originalMessage) {
         // Find the last user message from chat history in memory
@@ -310,8 +373,8 @@ async function handleRetryRequest(socket, clientId, originalMessage) {
         log(`Removed last user message from chat history for retry`);
     }
     
-    // Process the retry as a normal chat message
-    await processChatMessage(socket, clientId, originalMessage);
+    // Process the retry as a normal chat message with preserved model settings
+    await processChatMessage(socket, clientId, originalMessage, null, modelKey, reasoning_effort);
 }
 
 const server = net.createServer((socket) => {
@@ -373,7 +436,7 @@ const server = net.createServer((socket) => {
           
           // Handle retry requests
           if (payload.type === 'retry') {
-            await handleRetryRequest(socket, clientId, payload.originalMessage);
+            await handleRetryRequest(socket, clientId, payload.originalMessage, payload.model || 'kimi', payload.reasoning_effort);
             return;
           }
           
@@ -391,7 +454,7 @@ const server = net.createServer((socket) => {
           }
           
           // Process chat message with timeout handling
-          await processChatMessage(socket, clientId, payload.content, payload.timeout);
+          await processChatMessage(socket, clientId, payload.content, payload.timeout, payload.model || 'kimi', payload.reasoning_effort);
 
         } catch (err) {
           log(`Error parsing message from ${clientId}: ${err.message}`);
