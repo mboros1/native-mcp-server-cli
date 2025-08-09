@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <functional>
+#include <deque>
 #include "event.hpp"
 #include <atomic_queue.h>
 
