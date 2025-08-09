@@ -17,8 +17,6 @@ jobs:
     
     steps:
     - uses: actions/checkout@v4
-      with:
-        submodules: recursive  # In case you have git submodules
     
     - name: Install dependencies (Ubuntu)
       if: matrix.os == 'ubuntu-latest'
@@ -26,10 +24,22 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
-          libftxui-dev \
+          cmake \
           libspdlog-dev \
-          libfmt-dev \
-          cmake
+          libfmt-dev
+        
+        # FTXUI might not be in Ubuntu repos, so build from source
+        git clone https://github.com/ArthurSonzogni/FTXUI.git
+        cd FTXUI
+        mkdir build && cd build
+        cmake .. -DFTXUI_BUILD_EXAMPLES=OFF -DFTXUI_BUILD_TESTS=OFF -DFTXUI_BUILD_DOCS=OFF \
+                 -DCMAKE_INSTALL_PREFIX=/usr/local
+        make -j$(nproc)
+        sudo make install
+        sudo ldconfig
+        
+        # Verify installation
+        pkg-config --modversion ftxui || echo "ftxui not found via pkg-config"
     
     - name: Install dependencies (macOS)
       if: matrix.os == 'macos-latest'
@@ -40,6 +50,12 @@ jobs:
     - name: Build and run tests
       working-directory: src
       run: |
+        echo "Checking library installations..."
+        pkg-config --modversion ftxui || echo "Warning: ftxui not found via pkg-config"
+        pkg-config --modversion spdlog || echo "Warning: spdlog not found via pkg-config"
+        pkg-config --modversion fmt || echo "Warning: fmt not found via pkg-config"
+        
+        echo ""
         echo "Building application and tests..."
         make clean
         make all
