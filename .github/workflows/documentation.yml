@@ -1,0 +1,150 @@
+name: Generate Documentation
+
+on:
+  push:
+    branches: [ main, master, trunk ]
+    paths:
+      - 'src/**/*.hpp'
+      - 'src/**/*.h'
+      - 'src/**/*.cpp'
+      - 'Doxyfile'
+      - '.github/workflows/documentation.yml'
+  pull_request:
+    branches: [ main, master, trunk ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-docs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Install Doxygen and Graphviz
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y doxygen graphviz
+        doxygen --version
+    
+    - name: Generate Documentation
+      run: |
+        echo "Generating Doxygen documentation..."
+        doxygen Doxyfile
+        
+        # Check if documentation was generated
+        if [ ! -d "docs/doxygen/html" ]; then
+          echo "Error: Documentation was not generated"
+          exit 1
+        fi
+        
+        # Create index redirect if needed
+        if [ ! -f "docs/doxygen/html/index.html" ]; then
+          echo "Creating index.html redirect..."
+          cat > docs/doxygen/html/index.html << 'EOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta http-equiv="refresh" content="0; url=annotated.html">
+          <title>Native MCP CLI Documentation</title>
+        </head>
+        <body>
+          <p>Redirecting to documentation...</p>
+        </body>
+        </html>
+        EOF
+        fi
+    
+    - name: Upload documentation artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: documentation
+        path: docs/doxygen/html/
+        retention-days: 30
+    
+    - name: Setup Pages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/trunk'
+      uses: actions/configure-pages@v4
+    
+    - name: Upload to GitHub Pages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/trunk'
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: docs/doxygen/html
+  
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/trunk'
+    needs: build-docs
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+
+  validate-docs:
+    runs-on: ubuntu-latest
+    needs: build-docs
+    
+    steps:
+    - name: Download documentation
+      uses: actions/download-artifact@v4
+      with:
+        name: documentation
+        path: docs-test
+    
+    - name: Validate documentation
+      run: |
+        echo "Checking documentation structure..."
+        
+        # Check for essential files
+        required_files=(
+          "index.html"
+          "classes.html"
+          "files.html"
+        )
+        
+        for file in "${required_files[@]}"; do
+          if [ ! -f "docs-test/$file" ]; then
+            echo "Warning: Missing $file"
+          else
+            echo "✓ Found $file"
+          fi
+        done
+        
+        # Count documented items
+        echo ""
+        echo "Documentation statistics:"
+        echo "========================"
+        
+        # Count HTML files (rough estimate of documented items)
+        html_count=$(find docs-test -name "*.html" | wc -l)
+        echo "HTML pages generated: $html_count"
+        
+        # Check for class documentation
+        class_count=$(find docs-test -name "class*.html" | wc -l)
+        echo "Classes documented: $class_count"
+        
+        # Check for file documentation  
+        file_count=$(find docs-test -name "*_8hpp.html" -o -name "*_8cpp.html" | wc -l)
+        echo "Files documented: $file_count"
+        
+        if [ $html_count -lt 10 ]; then
+          echo "Warning: Very few documentation pages generated"
+          exit 1
+        fi
+        
+        echo ""
+        echo "Documentation validation passed!"
