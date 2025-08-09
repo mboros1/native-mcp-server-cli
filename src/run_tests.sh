@@ -43,11 +43,11 @@ echo "Building tests..."
 make -s test-persist test-state test-input test-events || exit 1
 echo ""
 
-# Run each test
-run_test "Chat Persistence" "test-persist"
-run_test "State Manager" "test-state"
-run_test "Input Handler" "test-input"
-run_test "Event System" "test-events"
+# Run each test from bin directory
+run_test "Chat Persistence" "bin/test-persist"
+run_test "State Manager" "bin/test-state"
+run_test "Input Handler" "bin/test-input"
+run_test "Event System" "bin/test-events"
 
 # Summary
 echo ""

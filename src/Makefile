@@ -2,6 +2,9 @@
 CXX      ?= g++
 CXXFLAGS += -std=c++20 -Wall -Wextra -pedantic
 
+# Output directory for binaries
+BIN_DIR = bin
+
 # Include paths
 INCLUDES = -I../deps/simdjson -I../deps -I../deps/asio -I../deps/json_struct -I../deps/atomic_queue -I../deps/token-estimator -I. -Iinclude
 
@@ -68,7 +71,7 @@ LDFLAGS_HEADLESS  = $(SPDLOG_LIBS)
 # ---- build targets ---------------------------------------------------------
 
 # Default target - build the full UI application
-demo: $(SOURCES)
+$(BIN_DIR)/demo: $(SOURCES) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_UI) $(SOURCES) -o $@ $(LDFLAGS_UI)
 
 # Headless library for testing (static library)
@@ -78,44 +81,57 @@ libheadless.a: $(HEADLESS_SOURCES)
 	rm -f *.o
 
 # Headless test executable
-test-headless: libheadless.a $(TEST_SOURCES)
+$(BIN_DIR)/test-headless: libheadless.a $(TEST_SOURCES) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) $(TEST_SOURCES) -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
 
 # Simple headless test executable
-simple-test: libheadless.a $(SIMPLE_TEST_SOURCES)
+$(BIN_DIR)/simple-test: libheadless.a $(SIMPLE_TEST_SOURCES) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) $(SIMPLE_TEST_SOURCES) -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
 
 # Run headless tests
-test: test-headless
-	./test-headless
+test: $(BIN_DIR)/test-headless
+	$(BIN_DIR)/test-headless
 
 # Run simple test
-test-simple: simple-test
-	./simple-test
+test-simple: $(BIN_DIR)/simple-test
+	$(BIN_DIR)/simple-test
 
 # Individual unit tests
-test-persist: libheadless.a $(PERSIST_TEST_SOURCES)
+$(BIN_DIR)/test-persist: libheadless.a $(PERSIST_TEST_SOURCES) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) $(PERSIST_TEST_SOURCES) -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
 
-test-state: libheadless.a ../tests/test_state_manager.cpp
+$(BIN_DIR)/test-state: libheadless.a ../tests/test_state_manager.cpp | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_state_manager.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
 
-test-events: ../tests/test_events.cpp
+$(BIN_DIR)/test-events: ../tests/test_events.cpp | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_events.cpp -o $@ $(LDFLAGS_HEADLESS)
 
-test-input: libheadless.a ../tests/test_input_handler.cpp
+$(BIN_DIR)/test-input: libheadless.a ../tests/test_input_handler.cpp | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_input_handler.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
 
 # Run all unit tests
-test-all: test-persist test-state test-events test-input
+test-all: $(BIN_DIR)/test-persist $(BIN_DIR)/test-state $(BIN_DIR)/test-events $(BIN_DIR)/test-input
 	@./run_tests.sh
 
 # Build everything
-all: demo test-headless simple-test
+all: $(BIN_DIR)/demo $(BIN_DIR)/test-headless $(BIN_DIR)/simple-test
+
+# Create bin directory
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
 
 # Clean build artifacts
 clean:
-	rm -f demo test-headless simple-test test-persist test-state test-events test-input libheadless.a *.o
+	rm -rf $(BIN_DIR) libheadless.a *.o
+
+# Convenience targets (without bin/ prefix)
+demo: $(BIN_DIR)/demo
+test-headless: $(BIN_DIR)/test-headless
+simple-test: $(BIN_DIR)/simple-test
+test-persist: $(BIN_DIR)/test-persist
+test-state: $(BIN_DIR)/test-state
+test-events: $(BIN_DIR)/test-events
+test-input: $(BIN_DIR)/test-input
 
 # Phony targets
-.PHONY: all clean test test-simple test-persist
+.PHONY: all clean test test-simple test-all demo test-headless simple-test test-persist test-state test-events test-input

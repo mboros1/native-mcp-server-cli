@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+bin/
 *.o
 *.a
 *.so
@@ -8,6 +9,13 @@ build/
 *.exe
 demo
 demo_*
+test-persist
+test-state
+test-events
+test-input
+test-headless
+simple-test
+libheadless.a
 
 # IDE and editor files
 .vscode/
