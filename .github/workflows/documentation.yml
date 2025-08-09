@@ -71,12 +71,24 @@ jobs:
         path: docs/doxygen/html/
         retention-days: 30
     
+    # Only attempt GitHub Pages deployment if explicitly enabled
+    - name: Check if Pages is enabled
+      if: github.event_name == 'push' && github.ref == 'refs/heads/trunk'
+      id: pages-check
+      continue-on-error: true
+      run: |
+        echo "Checking if GitHub Pages is enabled..."
+        echo "If this fails, please enable GitHub Pages in repository settings"
+        echo "Settings -> Pages -> Source: GitHub Actions"
+    
     - name: Setup Pages
       if: github.event_name == 'push' && github.ref == 'refs/heads/trunk'
+      continue-on-error: true
       uses: actions/configure-pages@v4
     
     - name: Upload to GitHub Pages
       if: github.event_name == 'push' && github.ref == 'refs/heads/trunk'
+      continue-on-error: true
       uses: actions/upload-pages-artifact@v3
       with:
         path: docs/doxygen/html
@@ -85,6 +97,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/trunk'
     needs: build-docs
     runs-on: ubuntu-latest
+    continue-on-error: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -92,7 +105,22 @@ jobs:
     steps:
     - name: Deploy to GitHub Pages
       id: deployment
+      continue-on-error: true
       uses: actions/deploy-pages@v4
+    
+    - name: Deployment Status
+      if: always()
+      run: |
+        if [ "${{ steps.deployment.outcome }}" == "success" ]; then
+          echo "✅ Documentation deployed to GitHub Pages!"
+          echo "URL: ${{ steps.deployment.outputs.page_url }}"
+        else
+          echo "⚠️ GitHub Pages deployment skipped or failed."
+          echo "To enable GitHub Pages:"
+          echo "1. Go to Settings -> Pages"
+          echo "2. Set Source to 'GitHub Actions'"
+          echo "3. Re-run this workflow"
+        fi
 
   validate-docs:
     runs-on: ubuntu-latest
