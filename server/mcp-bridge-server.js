@@ -77,7 +77,7 @@ if (!fs.existsSync(dataDir)) {
 }
 
 // Create log file
-const logFile = fs.createWriteStream(path.join(__dirname, 'test-server.log'), { flags: 'a' });
+const logFile = fs.createWriteStream(path.join(__dirname, 'mcp-bridge-server.log'), { flags: 'a' });
 
 // Chat history management - now reading from C++ client
 let chatHistory = [];
@@ -382,7 +382,7 @@ const server = net.createServer((socket) => {
     log(`Client connected: ${clientId}`);
 
     // Send a welcome message
-    socket.write(JSON.stringify({ type: 'welcome', message: 'Connected to test server' }) + '\n');
+    socket.write(JSON.stringify({ type: 'welcome', message: 'Connected to MCP bridge server' }) + '\n');
 
     socket.on('data', (data) => {
       const lines = data.toString().trim().split('\n');
@@ -490,7 +490,7 @@ export async function startServer(port = 4000) {
     
     return new Promise((resolve, reject) => {
         server.listen(port, '127.0.0.1', () => {
-            log(`Test server listening on 127.0.0.1:${port}`);
+            log(`MCP bridge server listening on 127.0.0.1:${port}`);
             resolve(server);
         });
         

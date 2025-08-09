@@ -12,11 +12,14 @@
     "dev": "node --watch cli.js",
     "build": "make -C src",
     "clean": "make -C src clean",
-    "test": "node test/test.js"
+    "test": "./scripts/run_tests.sh",
+    "test:js": "./scripts/run_js_tests.sh",
+    "test:all": "./scripts/run_tests.sh && ./scripts/run_js_tests.sh"
   },
   "files": [
     "lib/",
     "src/",
+    "server/",
     "deps/",
     "cli.js",
     "README.md"
@@ -47,7 +50,7 @@
     "native"
   ],
   "author": "Your Name",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/yourusername/native-mcp-cli.git"

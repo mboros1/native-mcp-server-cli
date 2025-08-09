@@ -1,0 +1,45 @@
+Native MCP Server CLI
+Copyright 2025 Native MCP Server CLI Contributors
+
+This product includes software developed by the Native MCP Server CLI Contributors.
+
+================================================================================
+Third-party dependencies and their licenses:
+================================================================================
+
+FTXUI
+- License: MIT
+- Copyright: Arthur Sonzogni
+- https://github.com/ArthurSonzogni/FTXUI
+
+spdlog
+- License: MIT
+- Copyright: Gabi Melman
+- https://github.com/gabime/spdlog
+
+fmt
+- License: MIT
+- Copyright: Victor Zverovich
+- https://github.com/fmtlib/fmt
+
+ASIO
+- License: Boost Software License 1.0
+- Copyright: Christopher M. Kohlhoff
+- https://github.com/chriskohlhoff/asio
+
+simdjson
+- License: Apache 2.0
+- Copyright: Daniel Lemire, Geoff Langdale
+- https://github.com/simdjson/simdjson
+
+atomic_queue
+- License: MIT
+- Copyright: Maxim Egorushkin
+- https://github.com/max0x7ba/atomic_queue
+
+json_struct
+- License: MIT
+- Copyright: Jorgen Lind
+- https://github.com/jorgen/json_struct
+
+================================================================================

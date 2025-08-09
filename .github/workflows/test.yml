@@ -47,7 +47,7 @@ jobs:
         brew update
         brew install ftxui spdlog fmt
     
-    - name: Build and run tests
+    - name: Build application and tests
       working-directory: src
       run: |
         echo "Checking library installations..."
@@ -59,15 +59,20 @@ jobs:
         echo "Building application and tests..."
         make clean
         make all
-        
-        echo ""
-        echo "Running tests..."
-        # Use CI-specific runner if in CI environment, otherwise regular runner
-        if [ -n "$CI" ]; then
-          ./run_tests_ci.sh
-        else
-          ./run_tests.sh
-        fi
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Install Node dependencies
+      run: npm install
+    
+    - name: Run C++ Tests
+      run: ./scripts/run_tests.sh
+    
+    - name: Run JavaScript Tests
+      run: ./scripts/run_js_tests.sh
     
     - name: Upload test results on failure
       if: failure()
@@ -75,8 +80,6 @@ jobs:
       with:
         name: test-results-${{ matrix.os }}
         path: |
-          src/test-persist
-          src/test-state
-          src/test-events
-          src/test-input
+          bin/test-*
+          scripts/*.log
         retention-days: 7

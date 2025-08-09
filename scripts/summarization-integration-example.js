@@ -251,7 +251,7 @@ export class EnhancedMCPServer {
   }
 }
 
-// Example of adding summarization to your existing test-server.js
+// Example of adding summarization to your existing mcp-bridge-server.js
 export function integrateSummarizationWithServer() {
   const enhancedServer = new EnhancedMCPServer();
   
