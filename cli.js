@@ -10,7 +10,13 @@ import { startServer, stopServer } from './server/mcp-bridge-server.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const NATIVE_BINARY = join(__dirname, 'src', 'demo');
 
-const logFile = fs.createWriteStream(path.join(__dirname, 'app.log'), { flags: 'a' });
+// Ensure logs directory exists
+const logsDir = path.join(__dirname, '.logs');
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+}
+
+const logFile = fs.createWriteStream(path.join(logsDir, 'app.log'), { flags: 'a' });
 
 function log(message) {
     const timestamp = new Date().toISOString();

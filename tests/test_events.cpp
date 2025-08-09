@@ -33,7 +33,8 @@ int main() {
     Event down = Event::ArrowDown();
     ASSERT(up == EventType::ArrowUp);
     ASSERT(down == EventType::ArrowDown);
-    ASSERT(up != down);
+    ASSERT(up != EventType::ArrowDown);
+    ASSERT(down != EventType::ArrowUp);
     PASS()
     
     // Test 4: Mouse events

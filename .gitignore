@@ -41,12 +41,9 @@ node_modules/
 deps/spdlog/
 
 # Log files
+.logs/
 *.log
 logs/
-mcp-server-node.log
-mcp-server-error.log
-mcp-server-stdout.log
-mcp-server-stderr.log
 
 # Screen dumps
 dump_*.txt

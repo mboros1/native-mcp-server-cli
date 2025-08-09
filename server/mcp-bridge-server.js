@@ -69,15 +69,22 @@ const MODEL_REGISTRY = Object.freeze({
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const rootDir = path.join(__dirname, '..');
 
 // Create .data directory if it doesn't exist
-const dataDir = path.join(__dirname, '.data');
+const dataDir = path.join(rootDir, '.data');
 if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
 }
 
+// Create .logs directory if it doesn't exist
+const logsDir = path.join(rootDir, '.logs');
+if (!fs.existsSync(logsDir)) {
+    fs.mkdirSync(logsDir, { recursive: true });
+}
+
 // Create log file
-const logFile = fs.createWriteStream(path.join(__dirname, 'mcp-bridge-server.log'), { flags: 'a' });
+const logFile = fs.createWriteStream(path.join(logsDir, 'mcp-bridge-server.log'), { flags: 'a' });
 
 // Chat history management - now reading from C++ client
 let chatHistory = [];

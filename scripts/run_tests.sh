@@ -3,6 +3,14 @@
 # Simple test runner for C++ executable tests
 # Returns 0 if all tests pass, 1 if any fail
 
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Project root is one level up from scripts/
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
+
+# Change to src directory for building
+cd "$PROJECT_ROOT/src" || exit 1
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -25,7 +33,7 @@ run_test() {
     TOTAL=$((TOTAL + 1))
     echo -n "Running $test_name... "
     
-    if ./$test_exec > /tmp/test_output_$$.txt 2>&1; then
+    if $test_exec > /tmp/test_output_$$.txt 2>&1; then
         echo -e "${GREEN}PASS${NC}"
         PASSED_TESTS+=("$test_name")
     else
@@ -43,7 +51,7 @@ echo "Building tests..."
 make -s test-persist test-state test-input test-events || exit 1
 echo ""
 
-# Run each test from bin directory
+# Run each test from bin directory (inside src/)
 run_test "Chat Persistence" "bin/test-persist"
 run_test "State Manager" "bin/test-state"
 run_test "Input Handler" "bin/test-input"
