@@ -3,7 +3,10 @@ CXX      ?= g++
 CXXFLAGS += -std=c++20 -Wall -Wextra -pedantic
 
 # Include paths
-INCLUDES = -I../deps/simdjson -I../deps -I../deps/asio -I../deps/json_struct -I../deps/atomic_queue -I../deps/token-estimator -I.
+INCLUDES = -I../deps/simdjson -I../deps -I../deps/asio -I../deps/json_struct -I../deps/atomic_queue -I../deps/token-estimator -I. -Iinclude
+
+# Source files
+SOURCES = main.cpp network/mcp_client.cpp ../deps/simdjson/simdjson.cpp ../deps/token-estimator/token_est.cpp
 
 # Try pkg-config first, fall back to manual paths if needed
 PKG_CONFIG := pkg-config
@@ -37,8 +40,8 @@ CXXFLAGS += $(FTXUI_CFLAGS) $(SPDLOG_CFLAGS) $(INCLUDES)
 LDFLAGS  += $(FTXUI_LIBS) $(SPDLOG_LIBS)
 
 # ---- build targets ---------------------------------------------------------
-demo: main.cpp ../deps/simdjson/simdjson.cpp ../deps/token-estimator/token_est.cpp
-	$(CXX) $(CXXFLAGS) main.cpp ../deps/simdjson/simdjson.cpp ../deps/token-estimator/token_est.cpp -o $@ $(LDFLAGS)
+demo: $(SOURCES)
+	$(CXX) $(CXXFLAGS) $(SOURCES) -o $@ $(LDFLAGS)
 
 all: demo
 clean:

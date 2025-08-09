@@ -7,6 +7,8 @@
 
 #include "event.hpp"
 #include "tcp_client.hpp"
+#include "include/types.hpp"
+#include "network/mcp_client.hpp"
 #include <atomic_queue.h>
 
 #include <ftxui/component/component.hpp>
@@ -39,6 +41,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <filesystem>
+#include <iomanip>
+#include <algorithm>
 
 using namespace ftxui;
 using namespace simdjson;
@@ -49,340 +53,6 @@ class UIRenderer;
 class InputHandler;
 class StateManager;
 
-// ============================================================================
-// Color Palette
-// ============================================================================
-namespace Colors {
-  const auto kBackground = Color::RGB(0x0D, 0x0F, 0x0F);
-  const auto kDarkBg = Color::RGB(0x1E, 0x1F, 0x29);
-  const auto kGreen = Color::RGB(0x72, 0xF1, 0xB8);
-  const auto kBrightGreen = Color::RGB(0x00, 0xFF, 0x9C);
-  const auto kDimGreen = Color::RGB(0x66, 0xFF, 0x66);
-  const auto kHotPink = Color::RGB(0xFF, 0x2D, 0x95);
-  const auto kPink = Color::RGB(0xFF, 0x7E, 0xDB);
-  const auto kPurple = Color::RGB(0x9B, 0x5D, 0xF5);
-  const auto kCyan = Color::RGB(0x5A, 0xF7, 0x8E);
-  const auto kGray = Color::RGB(0x88, 0x88, 0x88);
-}
-
-// ============================================================================
-// Data Models
-// ============================================================================
-struct ToolParameter {
-  std::string name;
-  std::string type;
-  std::string description;
-  bool required;
-  std::string defaultValue;
-};
-
-struct Tool {
-  std::string name;
-  std::string description;
-  std::string category;
-  std::vector<ToolParameter> parameters;
-  std::vector<std::string> examples;
-};
-
-struct Config {
-  std::string welcomeMessage = "🚀 Hello from FTXUI!";
-  std::string inputPlaceholder = "Type here…";
-  std::string serverName = "MCP Server";
-  std::string serverVersion = "1.0.0";
-  int maxHistorySize = 100;
-  bool enableLogging = false;
-  std::vector<Tool> tools;
-};
-
-// ============================================================================
-// Communication Mode
-// ============================================================================
-enum class CommMode {
-  STANDALONE,  // Direct terminal interaction
-  IPC         // Communicating with Node.js wrapper via JSON-RPC
-};
-
-// ============================================================================
-// MCP Client - Manages connection to MCP server via TCP
-// ============================================================================
-class MCPClient {
-private:
-  atomic_queue::AtomicQueueB2<AppEvent> event_queue_;
-  std::unique_ptr<TcpClient> tcp_client_;
-  std::thread event_processor_thread_;
-  bool running_ = false;
-  std::string host_;
-  int port_;
-  std::function<void(const std::string&, const std::string&)> response_callback_;
-
-public:
-  MCPClient(const std::string& host = "127.0.0.1", int port = 4000) 
-    : event_queue_(1024), host_(host), port_(port) {}  // Initialize queue with 1024 elements
-  
-  ~MCPClient() {
-    Stop();
-  }
-  
-  bool Connect() {
-    SPDLOG_INFO("Connecting to TCP server at {}:{}", host_, port_);
-    
-    tcp_client_ = std::make_unique<TcpClient>(event_queue_);
-    
-    // Start event processor thread before attempting connection
-    running_ = true;
-    event_processor_thread_ = std::thread([this]() { ProcessEvents(); });
-    
-    // Start TCP client connection attempts
-    tcp_client_->start(host_, port_);
-    
-    // Wait a bit to see if initial connection succeeds
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    
-    if (tcp_client_->is_connected()) {
-      SPDLOG_INFO("Connected to TCP server");
-      return true;
-    } else {
-      SPDLOG_WARN("Initial connection failed, will keep retrying in background");
-      return false;
-    }
-  }
-  
-  bool IsConnected() const {
-    return tcp_client_ && tcp_client_->is_connected();
-  }
-  
-  void Stop() {
-    SPDLOG_INFO("Stopping MCP Server");
-    running_ = false;
-    
-    if (tcp_client_) {
-      tcp_client_->stop();
-    }
-    
-    if (event_processor_thread_.joinable()) {
-      event_processor_thread_.join();
-    }
-  }
-  
-  void SendRequest(const std::string& json) {
-    if (!tcp_client_ || !tcp_client_->is_connected()) {
-      SPDLOG_ERROR("Cannot send request - not connected");
-      return;
-    }
-    
-    SPDLOG_INFO("Sending to server: {}", json);
-    tcp_client_->send_message(json);
-  }
-  
-  void SetResponseCallback(std::function<void(const std::string&, const std::string&)> callback) {
-    response_callback_ = callback;
-  }
-  
-private:
-  void ProcessEvents() {
-    while (running_) {
-      AppEvent event;
-      if (event_queue_.try_pop(event)) {
-        switch (event.type) {
-          case EventType::Connected:
-            SPDLOG_INFO("TCP connection established: {}", event.data);
-            break;
-          case EventType::ConnectionFailed:
-            SPDLOG_WARN("TCP connection failed: {}", event.data);
-            break;
-          case EventType::ConnectionLost:
-            SPDLOG_WARN("TCP connection lost: {}", event.data);
-            break;
-          case EventType::MessageReceived:
-            SPDLOG_DEBUG("Received from server: {}", event.data);
-            HandleServerMessage(event.data);
-            break;
-          default:
-            break;
-        }
-      } else {
-        // Sleep briefly if no events available
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      }
-    }
-    SPDLOG_INFO("Event processor thread exiting");
-  }
-  
-  void HandleServerMessage(const std::string& message) {
-    if (!response_callback_) {
-      SPDLOG_WARN("No response callback set, cannot process server message");
-      return;
-    }
-    
-    try {
-      // Parse JSON response from server
-      dom::parser parser;
-      dom::element doc;
-      
-      auto error = parser.parse(message).get(doc);
-      if (error) {
-        SPDLOG_ERROR("Failed to parse server message: {}", error_message(error));
-        return;
-      }
-      
-      // Check message type
-      if (doc["type"].is_string()) {
-        std::string type = std::string(doc["type"].get_string().value());
-        
-        if (type == "response") {
-          if (doc["reply"].is_string()) {
-            std::string reply = std::string(doc["reply"].get_string().value());
-            SPDLOG_INFO("Received chat response: {}", reply);
-            
-            // Check if this is a system message (like /new command response)
-            if (reply.find("Started new conversation") != std::string::npos || 
-                reply.find("Chat history has been rotated") != std::string::npos) {
-              response_callback_("SYSTEM", reply);
-            } else {
-              response_callback_("RESPONSE", reply);
-            }
-          }
-        } else if (type == "sync_response") {
-          // Pass sync response to callback for processing
-          response_callback_("SYNC", message);
-        } else if (type == "timeout_error") {
-          // Handle timeout errors with retry capability
-          if (doc["message"].is_string() && doc["canRetry"].is_bool() && doc["originalMessage"].is_string()) {
-            std::string timeout_msg = std::string(doc["message"].get_string().value());
-            bool can_retry = doc["canRetry"].get_bool().value();
-            std::string original_msg = std::string(doc["originalMessage"].get_string().value());
-            
-            SPDLOG_ERROR("Received timeout from server: {}", timeout_msg);
-            
-            if (can_retry) {
-              response_callback_("TIMEOUT_WITH_RETRY", timeout_msg + "|" + original_msg);
-            } else {
-              response_callback_("ERROR", "Timeout: " + timeout_msg);
-            }
-          }
-        } else if (type == "error") {
-          if (doc["message"].is_string()) {
-            std::string error_msg = std::string(doc["message"].get_string().value());
-            SPDLOG_ERROR("Received error from server: {}", error_msg);
-            response_callback_("ERROR", "Server error: " + error_msg);
-          }
-        }
-      } else {
-        SPDLOG_DEBUG("Received non-chat message: {}", message);
-      }
-      
-    } catch (const std::exception& e) {
-      SPDLOG_ERROR("Error processing server message: {}", e.what());
-    }
-  }
-};
-
-// ============================================================================
-// Log Entry for conversation history
-// ============================================================================
-// Move enum outside for JS_ENUM
-JS_ENUM(LogEntryType, USER, SYSTEM, RESPONSE, ERROR, BLOCKED)
-JS_ENUM_DECLARE_STRING_PARSER(LogEntryType)
-
-// Custom TypeHandler for time_point with ISO 8601 string format
-namespace JS {
-template <>
-struct TypeHandler<std::chrono::system_clock::time_point> {
-  static Error to(std::chrono::system_clock::time_point& to_type, ParseContext& context) {
-    if (context.token.value_type == Type::String) {
-      std::string time_str;
-      auto err = TypeHandler<std::string>::to(time_str, context);
-      if (err != Error::NoError) return err;
-      
-      // Parse ISO 8601 string (simplified - assumes format)
-      std::tm tm = {};
-      std::istringstream ss(time_str);
-      ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
-      
-      if (ss.fail()) {
-        return Error::UserDefinedErrors;
-      }
-      
-      to_type = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-      return Error::NoError;
-    }
-    return Error::ExpectedDataToken;
-  }
-  
-  static void from(const std::chrono::system_clock::time_point& from_type,
-                   Token& token, Serializer& serializer) {
-    // Convert to ISO 8601 string with milliseconds
-    auto time_t = std::chrono::system_clock::to_time_t(from_type);
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        from_type.time_since_epoch()) % 1000;
-    
-    char time_str[30];
-    std::strftime(time_str, sizeof(time_str), "%Y-%m-%dT%H:%M:%S", std::gmtime(&time_t));
-    
-    std::string iso_time = std::string(time_str) + "." + 
-                          std::to_string(ms.count() / 100) + 
-                          std::to_string((ms.count() / 10) % 10) + 
-                          std::to_string(ms.count() % 10) + "Z";
-    
-    TypeHandler<std::string>::from(iso_time, token, serializer);
-  }
-};
-}
-
-struct LogEntry {
-  LogEntryType type;
-  std::string content;
-  std::chrono::system_clock::time_point timestamp;
-  
-  JS_OBJECT(JS_MEMBER(type), JS_MEMBER(content), JS_MEMBER(timestamp));
-};
-
-// Chat History Entry - for API conversation context (chat-history.json)
-struct ChatHistoryEntry {
-  std::string role;        // "user" or "assistant" 
-  std::string content;     // message content
-  size_t token_cnt;        // token count for this message
-  std::chrono::system_clock::time_point timestamp;  // reuse same timestamp type
-  
-  JS_OBJECT(JS_MEMBER(role), JS_MEMBER(content), JS_MEMBER(token_cnt), JS_MEMBER(timestamp));
-};
-
-// Configuration struct for persistent settings
-struct ChatConfig {
-  std::string model = "kimi";           // Current model: kimi | o3
-  std::string reasoning_effort = "medium";  // Reasoning effort: minimal | low | medium | high
-  
-  JS_OBJECT(JS_MEMBER(model), JS_MEMBER(reasoning_effort));
-};
-
-// Request structs for server communication
-struct ChatRequest {
-  std::string type = "chat";
-  int id;
-  std::string content;
-  std::string model;
-  std::string reasoning_effort;
-  int64_t timeout;  // milliseconds
-  
-  JS_OBJECT(JS_MEMBER(type), JS_MEMBER(id), JS_MEMBER(content), 
-            JS_MEMBER(model), JS_MEMBER(reasoning_effort), JS_MEMBER(timeout));
-};
-
-struct RetryRequest {
-  std::string type = "retry";
-  std::string originalMessage;
-  std::string model;
-  std::string reasoning_effort;
-  
-  JS_OBJECT(JS_MEMBER(type), JS_MEMBER(originalMessage), 
-            JS_MEMBER(model), JS_MEMBER(reasoning_effort));
-};
-
-struct InterruptRequest {
-  std::string type = "reset";
-  
-  JS_OBJECT(JS_MEMBER(type));
-};
 
 // ============================================================================
 // State Manager - Single source of truth for application state
@@ -759,6 +429,187 @@ public:
   
   size_t CalculateTokenCount(const std::string& text) {
     return tokenizer_.count_tokens(text);
+  }
+  
+  std::vector<std::pair<std::filesystem::path, std::string>> GetAvailableChatHistories() {
+    std::vector<std::pair<std::filesystem::path, std::string>> histories;
+    const std::string data_dir = ".data";
+    const std::string current_file = ".data/chat-history.json";
+    
+    try {
+      // First add the current chat-history.json if it exists
+      if (std::filesystem::exists(current_file)) {
+        std::string first_user_msg = GetFirstUserMessage(current_file);
+        histories.push_back({current_file, first_user_msg});
+      }
+      
+      // Find all archived chat-history-*.json files (excluding .del files)
+      for (const auto& entry : std::filesystem::directory_iterator(data_dir)) {
+        if (entry.is_regular_file()) {
+          std::string filename = entry.path().filename().string();
+          std::string filepath = entry.path().string();
+          
+          // Skip current file (already added), deleted files, and non-chat files
+          if (filepath == current_file) continue;
+          if (filename.ends_with(".del")) continue;
+          
+          if (filename.starts_with("chat-history-") && filename.ends_with(".json")) {
+            // Try to read first user message from file
+            std::string first_user_msg = GetFirstUserMessage(entry.path());
+            histories.push_back({entry.path(), first_user_msg});
+          }
+        }
+      }
+      
+      // Sort by modification time (newest first), but keep current at top
+      if (histories.size() > 1) {
+        std::sort(histories.begin() + 1, histories.end(),
+          [](const auto& a, const auto& b) {
+            return std::filesystem::last_write_time(a.first) > 
+                   std::filesystem::last_write_time(b.first);
+          });
+      }
+    } catch (const std::exception& e) {
+      SPDLOG_ERROR("Error listing chat histories: {}", e.what());
+    }
+    
+    return histories;
+  }
+  
+  std::string GetFirstUserMessage(const std::filesystem::path& filepath) {
+    try {
+      std::ifstream file(filepath);
+      if (!file.is_open()) return "(unable to read)";
+      
+      std::string line;
+      while (std::getline(file, line)) {
+        // Parse JSON line to find first user message
+        JS::ParseContext context(line);
+        ChatHistoryEntry entry;
+        if (context.parseTo(entry) == JS::Error::NoError) {
+          if (entry.role == "user") {
+            // Return first 40 chars of message (or less if shorter)
+            if (entry.content.length() <= 40) {
+              return entry.content;
+            } else {
+              return entry.content.substr(0, 40) + "...";
+            }
+          }
+        }
+      }
+    } catch (const std::exception& e) {
+      SPDLOG_ERROR("Error reading {}: {}", filepath.string(), e.what());
+    }
+    return "(no user message found)";
+  }
+  
+  std::string FormatTimestamp(const std::filesystem::file_time_type& ftime, bool is_current = false) {
+    if (is_current) {
+      return "Current";
+    }
+    
+    // Convert file_time_type to system_clock time_point
+    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+      ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now()
+    );
+    
+    // Format the full date/time
+    auto time_t = std::chrono::system_clock::to_time_t(sctp);
+    std::tm tm = *std::localtime(&time_t);
+    std::ostringstream date_oss;
+    date_oss << std::put_time(&tm, "%b %d, %Y %I:%M %p");
+    std::string date_str = date_oss.str();
+    
+    // Calculate relative time
+    auto now = std::chrono::system_clock::now();
+    auto diff = now - sctp;
+    auto hours = std::chrono::duration_cast<std::chrono::hours>(diff).count();
+    auto days = hours / 24;
+    
+    std::string relative_str;
+    if (days > 0) {
+      relative_str = std::to_string(days) + " day" + (days == 1 ? "" : "s") + " ago";
+    } else if (hours > 0) {
+      relative_str = std::to_string(hours) + " hour" + (hours == 1 ? "" : "s") + " ago";
+    } else {
+      auto mins = std::chrono::duration_cast<std::chrono::minutes>(diff).count();
+      if (mins > 0) {
+        relative_str = std::to_string(mins) + " minute" + (mins == 1 ? "" : "s") + " ago";
+      } else {
+        relative_str = "just now";
+      }
+    }
+    
+    return date_str + " (" + relative_str + ")";
+  }
+  
+  bool LoadChatHistory(size_t index) {
+    auto histories = GetAvailableChatHistories();
+    
+    if (index == 0 || index > histories.size()) {
+      SPDLOG_ERROR("Invalid chat history index: {}", index);
+      return false;
+    }
+    
+    const auto& selected_path = histories[index - 1].first;
+    const std::string current_file = ".data/chat-history.json";
+    
+    // If selecting the current file, nothing to do
+    if (selected_path == current_file) {
+      SPDLOG_INFO("Already viewing current conversation");
+      return true;
+    }
+    
+    try {
+      // First rotate current file if it exists
+      if (std::filesystem::exists(current_file)) {
+        RotateChatHistoryFile();
+      }
+      
+      // Now copy the selected file to be the current one
+      std::filesystem::copy_file(selected_path, current_file, 
+                                  std::filesystem::copy_options::overwrite_existing);
+      
+      // Delete the old archived version
+      std::filesystem::remove(selected_path);
+      
+      SPDLOG_INFO("Loaded chat history from {}", selected_path.string());
+      return true;
+    } catch (const std::exception& e) {
+      SPDLOG_ERROR("Failed to load chat history: {}", e.what());
+      return false;
+    }
+  }
+  
+  bool DeleteChatHistory(size_t index) {
+    auto histories = GetAvailableChatHistories();
+    
+    if (index == 0 || index > histories.size()) {
+      SPDLOG_ERROR("Invalid chat history index: {}", index);
+      return false;
+    }
+    
+    const auto& selected_path = histories[index - 1].first;
+    const std::string current_file = ".data/chat-history.json";
+    
+    // Don't allow deleting current conversation
+    if (selected_path == current_file) {
+      SPDLOG_WARN("Cannot delete current conversation. Use /new to start fresh.");
+      return false;
+    }
+    
+    try {
+      // Soft delete by appending .del
+      std::string deleted_path = selected_path.string() + ".del";
+      std::filesystem::rename(selected_path, deleted_path);
+      
+      SPDLOG_INFO("Soft-deleted chat history: {} -> {}", 
+                  selected_path.string(), deleted_path);
+      return true;
+    } catch (const std::exception& e) {
+      SPDLOG_ERROR("Failed to delete chat history: {}", e.what());
+      return false;
+    }
   }
   
   void RotateChatHistoryFile() {
@@ -1691,6 +1542,9 @@ public:
           "  /tools   - List available tools\n"
           "  /servers - Show connected servers\n"
           "  /clear   - Clear conversation history\n"
+          "  /list    - List saved conversations\n"
+          "  /load N  - Load conversation #N\n"
+          "  /delete N - Delete conversation #N\n"
           "  /new     - Start new chat conversation\n"
           "  /sync    - Check chat history synchronization\n"
           "  /exit    - Exit the application (aliases: /quit, /q)\n"
@@ -1743,6 +1597,60 @@ public:
       } else if (cmd == "clear") {
         state_.ClearEventLog();
         AddLogEntryWithNotification(LogEntryType::SYSTEM, "Conversation cleared");
+      } else if (cmd == "list") {
+        // List available chat history files
+        auto histories = state_.GetAvailableChatHistories();
+        if (histories.empty()) {
+          AddLogEntryWithNotification(LogEntryType::SYSTEM, "No saved conversations found");
+        } else {
+          std::string list_output = "📚 Saved Conversations:\n\n";
+          int index = 1;
+          const std::string current_file = ".data/chat-history.json";
+          
+          for (const auto& [path, preview] : histories) {
+            bool is_current = (path == current_file);
+            auto ftime = std::filesystem::last_write_time(path);
+            std::string time_str = state_.FormatTimestamp(ftime, is_current);
+            
+            list_output += std::to_string(index++) + ". " + time_str + "\n";
+            list_output += "   \"" + preview + "\"\n\n";
+          }
+          
+          list_output += "Commands: /load N  /delete N";
+          AddLogEntryWithNotification(LogEntryType::SYSTEM, list_output);
+        }
+      } else if (cmd.starts_with("load ")) {
+        // Load a specific chat history
+        try {
+          size_t index = std::stoul(cmd.substr(5));
+          if (state_.LoadChatHistory(index)) {
+            // Clear event log and reload
+            state_.ClearEventLog();
+            state_.LoadChatHistoryOnStartup();
+            AddLogEntryWithNotification(LogEntryType::SYSTEM, 
+                                        "Loaded conversation #" + std::to_string(index));
+          } else {
+            AddLogEntryWithNotification(LogEntryType::ERROR, 
+                                        "Failed to load conversation #" + std::to_string(index));
+          }
+        } catch (const std::exception& e) {
+          AddLogEntryWithNotification(LogEntryType::ERROR, "Invalid index for /load command");
+        }
+      } else if (cmd.starts_with("delete ")) {
+        // Delete a specific chat history
+        try {
+          size_t index = std::stoul(cmd.substr(7));
+          if (state_.DeleteChatHistory(index)) {
+            AddLogEntryWithNotification(LogEntryType::SYSTEM, 
+                                        "Deleted conversation #" + std::to_string(index));
+          } else {
+            AddLogEntryWithNotification(LogEntryType::ERROR, 
+                                        "Failed to delete conversation #" + std::to_string(index) + 
+                                        " (cannot delete current conversation)");
+          }
+        } catch (const std::exception& e) {
+          AddLogEntryWithNotification(LogEntryType::ERROR, "Invalid index for /delete command");
+        }
       } else if (cmd == "new") {
         // Rotate chat history file, reset token count, clear conversation log, and send /new command to server
         if (comm_mode_ == CommMode::IPC && mcp_client_ && mcp_client_->IsConnected()) {
