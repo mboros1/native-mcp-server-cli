@@ -6,7 +6,7 @@ CXXFLAGS += -std=c++20 -Wall -Wextra -pedantic
 INCLUDES = -I../deps/simdjson -I../deps -I../deps/asio -I../deps/json_struct -I../deps/atomic_queue -I../deps/token-estimator -I. -Iinclude
 
 # Source files
-SOURCES = main.cpp network/mcp_client.cpp ../deps/simdjson/simdjson.cpp ../deps/token-estimator/token_est.cpp
+SOURCES = main.cpp network/mcp_client.cpp core/state_manager.cpp ../deps/simdjson/simdjson.cpp ../deps/token-estimator/token_est.cpp
 
 # Try pkg-config first, fall back to manual paths if needed
 PKG_CONFIG := pkg-config
