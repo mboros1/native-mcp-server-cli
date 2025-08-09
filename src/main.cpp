@@ -347,6 +347,43 @@ struct ChatHistoryEntry {
   JS_OBJECT(JS_MEMBER(role), JS_MEMBER(content), JS_MEMBER(token_cnt), JS_MEMBER(timestamp));
 };
 
+// Configuration struct for persistent settings
+struct ChatConfig {
+  std::string model = "kimi";           // Current model: kimi | o3
+  std::string reasoning_effort = "medium";  // Reasoning effort: minimal | low | medium | high
+  
+  JS_OBJECT(JS_MEMBER(model), JS_MEMBER(reasoning_effort));
+};
+
+// Request structs for server communication
+struct ChatRequest {
+  std::string type = "chat";
+  int id;
+  std::string content;
+  std::string model;
+  std::string reasoning_effort;
+  int64_t timeout;  // milliseconds
+  
+  JS_OBJECT(JS_MEMBER(type), JS_MEMBER(id), JS_MEMBER(content), 
+            JS_MEMBER(model), JS_MEMBER(reasoning_effort), JS_MEMBER(timeout));
+};
+
+struct RetryRequest {
+  std::string type = "retry";
+  std::string originalMessage;
+  std::string model;
+  std::string reasoning_effort;
+  
+  JS_OBJECT(JS_MEMBER(type), JS_MEMBER(originalMessage), 
+            JS_MEMBER(model), JS_MEMBER(reasoning_effort));
+};
+
+struct InterruptRequest {
+  std::string type = "reset";
+  
+  JS_OBJECT(JS_MEMBER(type));
+};
+
 // ============================================================================
 // State Manager - Single source of truth for application state
 // ============================================================================
@@ -1263,11 +1300,10 @@ private:
 // ============================================================================
 class InputHandler {
 public:
-  const std::string& model()  const { return current_model_;  }
-  const std::string& effort() const { return current_effort_; }
+  const std::string& model()  const { return config_.model;  }
+  const std::string& effort() const { return config_.reasoning_effort; }
 private:
-  std::string current_model_  = "kimi";           // kimi | o3
-  std::string current_effort_ = "medium";         // minimal | low | medium | high
+  ChatConfig config_;  // Configuration loaded from/saved to disk
   StateManager& state_;
   std::vector<Tool>& tools_;
   UIRenderer* renderer_ = nullptr;
@@ -1327,7 +1363,9 @@ private:
 
 public:
   InputHandler(StateManager& state, std::vector<Tool>& tools) 
-    : state_(state), tools_(tools) {}
+    : state_(state), tools_(tools) {
+    LoadConfig();  // Load configuration on startup
+  }
     
   void SetRenderer(UIRenderer* renderer) {
     renderer_ = renderer;
@@ -1335,6 +1373,59 @@ public:
   
   void SetLogManager(ConversationLogManager* manager) {
     log_manager_ = manager;
+  }
+  
+  void LoadConfig() {
+    std::filesystem::path config_path = std::filesystem::path(".config") / "chat-config.json";
+    
+    if (std::filesystem::exists(config_path)) {
+      try {
+        std::ifstream file(config_path);
+        if (file.is_open()) {
+          std::string json_str((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+          
+          JS::ParseContext context(json_str);
+          context.parseTo(config_);
+          
+          SPDLOG_INFO("Loaded configuration from {}: model={}, effort={}", 
+                      config_path.string(), config_.model, config_.reasoning_effort);
+        }
+      } catch (const std::exception& e) {
+        SPDLOG_ERROR("Failed to load config: {}", e.what());
+        // Use defaults on error
+      }
+    } else {
+      SPDLOG_INFO("No config file found at {}, using defaults", config_path.string());
+      // Create .config directory if it doesn't exist
+      std::filesystem::create_directories(config_path.parent_path());
+      SaveConfig();  // Save default config
+    }
+  }
+  
+  void SaveConfig() {
+    std::filesystem::path config_path = std::filesystem::path(".config") / "chat-config.json";
+    
+    try {
+      // Ensure directory exists
+      std::filesystem::create_directories(config_path.parent_path());
+      
+      // Serialize config to JSON
+      std::string json = JS::serializeStruct(config_);
+      
+      // Write to file
+      std::ofstream file(config_path);
+      if (file.is_open()) {
+        file << json;
+        file.close();
+        SPDLOG_INFO("Saved configuration to {}: model={}, effort={}", 
+                    config_path.string(), config_.model, config_.reasoning_effort);
+      } else {
+        SPDLOG_ERROR("Failed to open config file for writing: {}", config_path.string());
+      }
+    } catch (const std::exception& e) {
+      SPDLOG_ERROR("Failed to save config: {}", e.what());
+    }
   }
   
   void SetCommMode(CommMode mode) {
@@ -1357,8 +1448,13 @@ public:
     }
     
     SPDLOG_INFO("Sending interrupt request");
-    std::string request = R"({"type": "reset"})";
-    mcp_client_->SendRequest(request);
+    
+    // Build strongly-typed interrupt request
+    InterruptRequest request;
+    
+    // Serialize to JSON using json_struct
+    std::string json = JS::serializeStruct(request, JS::SerializerOptions(JS::SerializerOptions::Compact));
+    mcp_client_->SendRequest(json);
     
     // Clear awaiting response state immediately
     state_.ClearAwaitingResponse();
@@ -1379,10 +1475,15 @@ public:
     std::string original_message = state_.GetRetryOriginalMessage();
     SPDLOG_INFO("Sending retry request for message: {}", original_message);
     
-    // Send retry request to server with the exact message to retry
-    std::stringstream json;
-    json << "{\"type\":\"retry\",\"originalMessage\":\"" << EscapeJSON(original_message) << "\"}";
-    mcp_client_->SendRequest(json.str());
+    // Build strongly-typed retry request
+    RetryRequest request;
+    request.originalMessage = original_message;
+    request.model = config_.model;
+    request.reasoning_effort = config_.reasoning_effort;
+    
+    // Serialize to JSON using json_struct
+    std::string json = JS::serializeStruct(request, JS::SerializerOptions(JS::SerializerOptions::Compact));
+    mcp_client_->SendRequest(json);
     
     // Clear retry state and add log entry
     state_.ClearRetry();
@@ -1414,17 +1515,19 @@ public:
     // Set awaiting response state
     state_.SetAwaitingResponse(message);
     
-    // Include server timeout in request
-    auto timeout_ms = state_.GetServerTimeout().count();
-    std::stringstream json;
-    json << "{\"type\":\"chat\",\"id\":" << ++message_id_ 
-         << ",\"content\":\"" << EscapeJSON(message) << "\""
-         << ",\"model\":\"" << current_model_ << "\""
-         << ",\"reasoning_effort\":\"" << current_effort_ << "\""
-         << ",\"timeout\":" << timeout_ms << "}";
+    // Build strongly-typed request
+    ChatRequest request;
+    request.id = ++message_id_;
+    request.content = message;
+    request.model = config_.model;
+    request.reasoning_effort = config_.reasoning_effort;
+    request.timeout = state_.GetServerTimeout().count();
     
-    SPDLOG_INFO("Sending chat JSON: {}", json.str());
-    mcp_client_->SendRequest(json.str());
+    // Serialize to JSON using json_struct
+    std::string json = JS::serializeStruct(request, JS::SerializerOptions(JS::SerializerOptions::Compact));
+    
+    SPDLOG_INFO("Sending chat JSON: {}", json);
+    mcp_client_->SendRequest(json);
   }
   
   void SendMCPRequest(const std::string& method, const std::string& params) {
@@ -1502,7 +1605,7 @@ public:
           std::string model_info = 
             "🤖 Model Selection\n"
             "\n"
-            "Current: " + current_model_ + " (reasoning: " + current_effort_ + ")\n"
+            "Current: " + config_.model + " (reasoning: " + config_.reasoning_effort + ")\n"
             "\n"
             "Available Models:\n"
             "  • kimi - Kimi K2 (fast, cost-effective)\n"
@@ -1520,7 +1623,8 @@ public:
           // Set new model
           std::string m = cmd.substr(6);
           if (m == "kimi" || m == "o3") {
-            current_model_ = m;
+            config_.model = m;
+            SaveConfig();  // Persist the change
             state_.AddLogEntry(LogEntryType::SYSTEM,
                                "Model switched to «" + m + "»");
           } else {
@@ -1537,7 +1641,7 @@ public:
           std::string think_info = 
             "🧠 Reasoning Effort (OpenAI o3)\n"
             "\n"
-            "Current: " + current_effort_ + " (model: " + current_model_ + ")\n"
+            "Current: " + config_.reasoning_effort + " (model: " + config_.model + ")\n"
             "\n"
             "Available Levels:\n"
             "  • minimal - Fast, basic reasoning\n"
@@ -1559,12 +1663,13 @@ public:
           static const std::set<std::string> ok =
               {"minimal","low","medium","high"};
           if (ok.count(e)) {
-            current_effort_ = e;
+            config_.reasoning_effort = e;
+            SaveConfig();  // Persist the change
             state_.AddLogEntry(LogEntryType::SYSTEM,
                                "Reasoning effort set to «" + e + "»");
-            if (current_model_ != "o3") {
+            if (config_.model != "o3") {
               state_.AddLogEntry(LogEntryType::SYSTEM,
-                                 "Note: Reasoning effort only affects o3 model. Current: " + current_model_);
+                                 "Note: Reasoning effort only affects o3 model. Current: " + config_.model);
             }
           } else {
             state_.AddLogEntry(LogEntryType::ERROR,

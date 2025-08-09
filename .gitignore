@@ -19,6 +19,7 @@ demo_*
 *.sublime-*
 .history/
 .data/
+.config/
 
 # Debug files
 *.dSYM/
