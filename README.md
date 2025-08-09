@@ -1,5 +1,7 @@
 # Native MCP CLI
 
+[![Tests](https://github.com/yourusername/native-mcp-cli/actions/workflows/test.yml/badge.svg)](https://github.com/yourusername/native-mcp-cli/actions/workflows/test.yml)
+
 A high-performance Model Context Protocol (MCP) CLI with a native C++ terminal UI.
 
 ## Features

@@ -10,7 +10,7 @@
 #include <spdlog/spdlog.h>
 #include <simdjson.h>
 #include "../tcp_client.hpp"
-#include "../include/types.hpp"
+#include "../include/types_core.hpp"
 
 using namespace simdjson;
 

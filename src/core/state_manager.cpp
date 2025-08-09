@@ -266,12 +266,9 @@ std::string StateManager::GetStatusMessage(bool has_input_text) const {
 
 // Chat history management
 void StateManager::WriteToChatHistory(const std::string& role, const std::string& content) {
-  // For user messages, only write to chat history if we're not awaiting a response
-  // This prevents orphaned user messages when requests are blocked by mutex
-  if (role == "user" && IsAwaitingResponse()) {
-    SPDLOG_DEBUG("Skipping chat history write for user message - already awaiting response");
-    return;
-  }
+  // Note: The check for IsAwaitingResponse() has been removed.
+  // Blocking duplicate messages should happen at the SendChatMessage level,
+  // not here. This function should always write when called.
   
   // Calculate token count
   size_t tokens = tokenizer_.count_tokens(content);

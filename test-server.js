@@ -48,7 +48,7 @@ const MODEL_REGISTRY = Object.freeze({
     client: openai,
     endpoint: '/v1/responses',
     extraParams: {
-      max_output_tokens: 1024,
+      max_output_tokens: 5*1024,
       reasoning: { effort: process.env.O3_REASONING_EFFORT ?? 'medium' },
     },
     formatRequest: (messages, params, reasoning_effort) => {

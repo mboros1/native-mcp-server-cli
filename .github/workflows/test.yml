@@ -1,0 +1,66 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, master, trunk ]
+  pull_request:
+    branches: [ main, master, trunk ]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: false  # Continue running other OS tests even if one fails
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive  # In case you have git submodules
+    
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          libftxui-dev \
+          libspdlog-dev \
+          libfmt-dev \
+          cmake
+    
+    - name: Install dependencies (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew update
+        brew install ftxui spdlog fmt
+    
+    - name: Build and run tests
+      working-directory: src
+      run: |
+        echo "Building application and tests..."
+        make clean
+        make all
+        
+        echo ""
+        echo "Running tests..."
+        # Use CI-specific runner if in CI environment, otherwise regular runner
+        if [ -n "$CI" ]; then
+          ./run_tests_ci.sh
+        else
+          ./run_tests.sh
+        fi
+    
+    - name: Upload test results on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ matrix.os }}
+        path: |
+          src/test-persist
+          src/test-state
+          src/test-events
+          src/test-input
+        retention-days: 7

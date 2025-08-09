@@ -10,7 +10,7 @@
 #include <spdlog/spdlog.h>
 #include <simdjson.h>
 #include <token_est.h>
-#include "../include/types.hpp"
+#include "../include/types_core.hpp"
 
 class StateManager {
 public:
