@@ -91,11 +91,6 @@ Makefile.cmake
 *.gch
 *.pch
 
-# Core dumps
-core
-core.*
-vgcore.*
-
 # Profiling
 *.prof
 gmon.out
