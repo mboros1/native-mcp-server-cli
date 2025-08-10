@@ -6,8 +6,13 @@ import { dirname } from 'path';
 import axios from 'axios';
 import { config } from 'dotenv';
 import { executeTool, AVAILABLE_TOOLS, formatToolResult } from './tools/toolRouter.js';
+import { silenceConsole } from './lib/logger.js';
 
-config();
+// CRITICAL: Silence all console output to prevent FTXUI corruption
+silenceConsole();
+
+// Load environment variables quietly
+config({ silent: true });
 
 
 const moonshot = axios.create({
@@ -38,9 +43,11 @@ const MODEL_REGISTRY = Object.freeze({
     client: moonshot,
     endpoint: '/v1/chat/completions',
     extraParams: { temperature: 0.3, max_tokens: 10*1024 },
-    formatRequest: (messages, params) => ({
+    supportsTools: true,
+    formatRequest: (messages, params, reasoning_effort, tools = null) => ({
       model: 'kimi-k2',
       messages,
+      ...(tools && tools.length > 0 ? { tools } : {}),
       ...params
     })
   },
@@ -160,8 +167,13 @@ function loadChatHistory() {
 }
 
 // Add message to in-memory chat history (C++ handles file writing)
-function addToMemoryHistory(role, content) {
-    chatHistory.push({ role, content });
+function addToMemoryHistory(role, content, tool_calls = null) {
+    if (tool_calls) {
+        // Store tool calls in history
+        chatHistory.push({ role, content: null, tool_calls });
+    } else {
+        chatHistory.push({ role, content });
+    }
 }
 
 // Rotate chat history (for /new command) - just clear memory, C++ handles file rotation
@@ -220,8 +232,22 @@ async function processChatMessage(socket, clientId, messageContent, clientTimeou
             throw new Error('Request was aborted');
         }
         
+        // Prepare tools if model supports them
+        let tools = null;
+        if (modelConfig.supportsTools) {
+            // Convert our tool definitions to OpenAI function calling format
+            tools = AVAILABLE_TOOLS.map(tool => ({
+                type: 'function',
+                function: {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: tool.parameters
+                }
+            }));
+        }
+        
         // Build request parameters using model-specific formatter
-        const requestParams = modelConfig.formatRequest(messages, modelConfig.extraParams, reasoning_effort);
+        const requestParams = modelConfig.formatRequest(messages, modelConfig.extraParams, reasoning_effort, tools);
         
         const { data: resp } = await modelConfig.client.post(modelConfig.endpoint, requestParams, {
             signal, // Pass abort signal to axios
@@ -240,13 +266,66 @@ async function processChatMessage(socket, clientId, messageContent, clientTimeou
         
         // Parse response based on model type
         let replyText;
+        let toolCalls = null;
+        
         if (modelKey === 'o3') {
             // OpenAI responses API format: find the message item in output array
             const messageItem = resp.output?.find(item => item.type === 'message');
             replyText = messageItem?.content?.[0]?.text || 'No response content';
         } else {
             // Traditional chat completions format (Kimi)
-            replyText = resp.choices[0].message.content;
+            const choice = resp.choices[0];
+            
+            // Check if the model wants to call tools
+            if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
+                toolCalls = choice.message.tool_calls;
+                log(`Model requested ${toolCalls.length} tool call(s)`);
+                
+                // Execute tool calls
+                const toolResults = [];
+                for (const toolCall of toolCalls) {
+                    const { function: func } = toolCall;
+                    log(`Executing tool: ${func.name}`);
+                    
+                    try {
+                        const args = JSON.parse(func.arguments);
+                        const result = await executeTool(func.name, args);
+                        toolResults.push({
+                            tool_call_id: toolCall.id,
+                            role: 'tool',
+                            name: func.name,
+                            content: JSON.stringify(result)
+                        });
+                        log(`Tool ${func.name} executed successfully`);
+                    } catch (error) {
+                        toolResults.push({
+                            tool_call_id: toolCall.id,
+                            role: 'tool',
+                            name: func.name,
+                            content: JSON.stringify({ error: error.message })
+                        });
+                        log(`Tool ${func.name} failed: ${error.message}`);
+                    }
+                }
+                
+                // Add tool calls and results to conversation
+                addToMemoryHistory('assistant', null, toolCalls);
+                for (const result of toolResults) {
+                    messages.push(result);
+                }
+                
+                // Make a follow-up call to get the final response
+                log(`Making follow-up call after tool execution`);
+                const followUpParams = modelConfig.formatRequest(messages, modelConfig.extraParams, reasoning_effort, tools);
+                const { data: followUpResp } = await modelConfig.client.post(modelConfig.endpoint, followUpParams, {
+                    signal,
+                    timeout: timeoutMs
+                });
+                
+                replyText = followUpResp.choices[0].message.content;
+            } else {
+                replyText = choice.message.content;
+            }
         }
         
         // Add assistant response to in-memory history (C++ will write to file when it receives response)

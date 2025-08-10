@@ -9,6 +9,7 @@
  */
 
 import { listFiles, LIST_FILES_TOOL } from './listFiles.js';
+import { toolLog } from '../lib/logger.js';
 
 /**
  * Registry of all available tools
@@ -48,16 +49,16 @@ export async function executeTool(toolName, args) {
   }
   
   try {
-    // Log tool execution for debugging
-    console.log(`[Tool] Executing ${toolName} with args:`, JSON.stringify(args, null, 2));
+    // Log tool execution for debugging (to file, not console!)
+    toolLog(`[Tool] Executing ${toolName} with args:`, JSON.stringify(args, null, 2));
     
     // Execute the tool
     const result = await implementation(args);
     
-    console.log(`[Tool] ${toolName} completed successfully`);
+    toolLog(`[Tool] ${toolName} completed successfully`);
     return result;
   } catch (error) {
-    console.error(`[Tool] ${toolName} failed:`, error.message);
+    toolLog(`[Tool] ${toolName} failed:`, error.message);
     throw error;
   }
 }
