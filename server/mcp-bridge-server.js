@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import axios from 'axios';
 import { config } from 'dotenv';
+import { executeTool, AVAILABLE_TOOLS, formatToolResult } from './tools/toolRouter.js';
 
 config();
 
@@ -36,7 +37,7 @@ const MODEL_REGISTRY = Object.freeze({
     id: 'kimi-k2',
     client: moonshot,
     endpoint: '/v1/chat/completions',
-    extraParams: { temperature: 0.3, max_tokens: 1024 },
+    extraParams: { temperature: 0.3, max_tokens: 10*1024 },
     formatRequest: (messages, params) => ({
       model: 'kimi-k2',
       messages,
@@ -48,7 +49,7 @@ const MODEL_REGISTRY = Object.freeze({
     client: openai,
     endpoint: '/v1/responses',
     extraParams: {
-      max_output_tokens: 5*1024,
+      max_output_tokens: 10*1024,
       reasoning: { effort: process.env.O3_REASONING_EFFORT ?? 'medium' },
     },
     formatRequest: (messages, params, reasoning_effort) => {
@@ -438,6 +439,46 @@ const server = net.createServer((socket) => {
               timestamp: Date.now()
             }) + '\n');
             log(`Sent sync response to ${clientId}: ${serverStats}`);
+            return;
+          }
+          
+          // Handle tool list request
+          if (payload.type === 'tool_list') {
+            log(`Tool list request from ${clientId}`);
+            socket.write(JSON.stringify({
+              type: 'tool_list_response',
+              tools: AVAILABLE_TOOLS,
+              timestamp: Date.now()
+            }) + '\n');
+            log(`Sent ${AVAILABLE_TOOLS.length} tool definitions to ${clientId}`);
+            return;
+          }
+          
+          // Handle tool execution request
+          if (payload.type === 'tool_execute') {
+            const { tool_name, arguments: args } = payload;
+            log(`Tool execution request from ${clientId}: ${tool_name}`);
+            
+            try {
+              const result = await executeTool(tool_name, args);
+              socket.write(JSON.stringify({
+                type: 'tool_result',
+                tool_name,
+                success: true,
+                result,
+                timestamp: Date.now()
+              }) + '\n');
+              log(`Tool ${tool_name} executed successfully for ${clientId}`);
+            } catch (error) {
+              socket.write(JSON.stringify({
+                type: 'tool_result',
+                tool_name,
+                success: false,
+                error: error.message,
+                timestamp: Date.now()
+              }) + '\n');
+              log(`Tool ${tool_name} failed for ${clientId}: ${error.message}`);
+            }
             return;
           }
           
