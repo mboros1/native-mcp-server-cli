@@ -2,6 +2,8 @@
 
 #include "mock_tcp_server.hpp"
 #include "../src/protocol/jsonrpc_messages.hpp"
+#include <simdjson.h>
+#include <spdlog/spdlog.h>
 #include <queue>
 #include <map>
 #include <mutex>
@@ -203,23 +205,74 @@ private:
      * @brief Process an incoming request
      */
     std::string ProcessRequest(const std::string& request_str) {
-        // Parse the request
-        jsonrpc::JsonRpcRequest request;
-        if (!jsonrpc::JsonRpcParser::parseRequest(request_str, request)) {
-            // Invalid JSON
+        SPDLOG_INFO("=== Mock server received request ===");
+        SPDLOG_INFO("Raw request: {}", request_str);
+        
+        // Use simdjson to parse and extract method
+        simdjson::dom::parser parser;
+        simdjson::dom::element doc;
+        
+        auto error = parser.parse(request_str).get(doc);
+        if (error) {
+            SPDLOG_ERROR("Failed to parse JSON: {}", simdjson::error_message(error));
             return jsonrpc::JsonRpcResponseBuilder()
                 .id(0)
                 .error(-32700, "Parse error")
                 .buildJson();
         }
         
+        SPDLOG_INFO("Successfully parsed JSON");
+        
+        // Extract basic fields
+        std::string method;
+        std::optional<int> id;
+        
+        if (doc["method"].is_string()) {
+            method = std::string(doc["method"].get_string().value());
+            SPDLOG_INFO("Method: {}", method);
+        } else {
+            SPDLOG_WARN("No method field found in request");
+            return jsonrpc::JsonRpcResponseBuilder()
+                .id(0)
+                .error(-32600, "Invalid Request - missing method")
+                .buildJson();
+        }
+        
+        if (doc["id"].is_int64()) {
+            id = doc["id"].get_int64().value();
+            SPDLOG_INFO("ID (int64): {}", id.value());
+        } else if (doc["id"].is_uint64()) {
+            id = static_cast<int>(doc["id"].get_uint64().value());
+            SPDLOG_INFO("ID (uint64): {}", id.value());
+        } else if (doc["id"].is_null()) {
+            SPDLOG_INFO("ID is null (notification)");
+        } else {
+            SPDLOG_INFO("ID field not present or not a number");
+        }
+        
+        // Check params
+        if (!doc["params"].is_null()) {
+            SPDLOG_INFO("Has params field");
+            // Try to stringify the params
+            std::string params_str = simdjson::minify(doc["params"]);
+            SPDLOG_INFO("Params: {}", params_str);
+        } else {
+            SPDLOG_INFO("No params field");
+        }
+        
         // Update statistics
         stats_.total_requests++;
-        stats_.method_counts[request.method]++;
-        stats_.request_history.push_back(request);
+        stats_.method_counts[method]++;
+        
+        // Store simplified request for history
+        jsonrpc::JsonRpcRequest req;
+        req.method = method;
+        req.id = id;
+        stats_.request_history.push_back(req);
         
         // Check for notification (no response needed)
-        if (!request.id.has_value()) {
+        if (!id.has_value()) {
+            SPDLOG_INFO("This is a notification - no response will be sent");
             return "";  // No response for notifications
         }
         
@@ -229,36 +282,51 @@ private:
         if (!next_responses_.empty()) {
             MockResponse resp = next_responses_.front();
             next_responses_.pop();
-            return BuildResponse(request, resp);
+            std::string response = BuildResponse(req, resp);
+            SPDLOG_INFO("=== Mock server sending response ===");
+            SPDLOG_INFO("Response: {}", response);
+            return response;
         }
         
         // 2. Check for custom handler
-        auto handler_it = custom_handlers_.find(request.method);
+        auto handler_it = custom_handlers_.find(method);
         if (handler_it != custom_handlers_.end()) {
-            return handler_it->second(request);
+            std::string response = handler_it->second(req);
+            SPDLOG_INFO("=== Mock server sending response (custom handler) ===");
+            SPDLOG_INFO("Response: {}", response);
+            return response;
         }
         
         // 3. Check for queued method response
-        auto queue_it = method_responses_.find(request.method);
+        auto queue_it = method_responses_.find(method);
         if (queue_it != method_responses_.end() && !queue_it->second.empty()) {
             MockResponse resp = queue_it->second.front();
             if (resp.once) {
                 queue_it->second.pop();
             }
-            return BuildResponse(request, resp);
+            std::string response = BuildResponse(req, resp);
+            SPDLOG_INFO("=== Mock server sending response (queued) ===");
+            SPDLOG_INFO("Response: {}", response);
+            return response;
         }
         
         // 4. Check for default method response
-        auto default_it = default_responses_.find(request.method);
+        auto default_it = default_responses_.find(method);
         if (default_it != default_responses_.end()) {
-            return BuildResponse(request, default_it->second);
+            std::string response = BuildResponse(req, default_it->second);
+            SPDLOG_INFO("=== Mock server sending response (default) ===");
+            SPDLOG_INFO("Response: {}", response);
+            return response;
         }
         
         // 5. Return method not found
-        return jsonrpc::JsonRpcResponseBuilder()
-            .id(request.id.value_or(0))
+        std::string error_response = jsonrpc::JsonRpcResponseBuilder()
+            .id(id.value_or(0))
             .error(-32601, "Method not found")
             .buildJson();
+        SPDLOG_INFO("=== Mock server sending error response (method not found) ===");
+        SPDLOG_INFO("Response: {}", error_response);
+        return error_response;
     }
     
     /**

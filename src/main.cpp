@@ -347,6 +347,11 @@ public:
       if (mcp_client_->Connect()) {
         input_handler_->SetMCPClient(mcp_client_.get());
         
+        // Set up callback to handle response IDs for JSON-RPC correlation
+        mcp_client_->SetIdCallback([this](int id) {
+          input_handler_->OnResponseReceived(id);
+        });
+        
         // Set up callback to handle server responses
         mcp_client_->SetResponseCallback([this](const std::string& type, const std::string& content) {
           if (type == "RESPONSE") {

@@ -9,6 +9,38 @@
 
 namespace jsonrpc {
 
+// ============================================================================
+// JSON-RPC 2.0 Core Types
+// ============================================================================
+
+// Request ID Type (can be string, number, or null/monostate for simplicity we use int)
+using RequestId = int;
+
+// Standard error codes (from spec)
+enum class ErrorCode : int {
+    // JSON-RPC 2.0 standard errors
+    ParseError     = -32700,  // Invalid JSON was received
+    InvalidRequest = -32600,  // JSON sent is not a valid Request
+    MethodNotFound = -32601,  // Method does not exist
+    InvalidParams  = -32602,  // Invalid method parameters
+    InternalError  = -32603,  // Internal JSON-RPC error
+    
+    // Implementation-defined server errors (-32000 to -32099)
+    ServerError       = -32000,  // General server error
+    Timeout          = -32001,  // Request timeout
+    ModelUnavailable = -32002,  // AI model unavailable
+    ToolFailed       = -32003,  // Tool execution failed
+    RateLimitExceeded = -32004,  // Rate limit exceeded
+    AuthFailed       = -32005,  // Authentication failed
+    SyncError        = -32010,  // Chat history sync error
+    FileError        = -32011,  // File operation error
+};
+
+// Convert error code to int for serialization
+inline int errorCodeToInt(ErrorCode code) {
+    return static_cast<int>(code);
+}
+
 // Helper for compact JSON serialization
 template<typename T>
 inline std::string toCompactJson(const T& obj) {
@@ -19,24 +51,16 @@ inline std::string toCompactJson(const T& obj) {
 // Simple Serializable Structs (for json_struct)
 // ============================================================================
 
-// Generic JSON-RPC Request
-struct JsonRpcRequest {
-    std::string jsonrpc = "2.0";
-    std::optional<int> id;  // No id = notification
-    std::string method;
-    std::optional<std::string> params;  // JSON string of params
-    
-    JS_OBJ(jsonrpc, id, method, params);
-};
+// Forward declaration - will be defined after param structs
+struct JsonRpcRequest;
 
-// Generic JSON-RPC Response
+// Generic JSON-RPC Response (for parsing, without specific types)
 struct JsonRpcResponse {
     std::string jsonrpc = "2.0";
     int id = 0;
-    std::optional<std::string> result;  // JSON string of result
-    std::optional<std::string> error;   // JSON string of error
+    // Note: result and error deliberately omitted for parsing envelope only
     
-    JS_OBJ(jsonrpc, id, result, error);
+    JS_OBJ(jsonrpc, id);
 };
 
 // Generic JSON-RPC Notification (no id, no response expected)
@@ -81,6 +105,56 @@ struct TransactionBeginParams {
     std::optional<int> timeout;
     
     JS_OBJ(operations, timeout);
+};
+
+// Cancel/interrupt request params
+struct CancelParams {
+    std::optional<int> requestId;  // ID of request to cancel, null = cancel current
+    
+    JS_OBJ(requestId);
+};
+
+// Retry request params
+struct RetryParams {
+    std::string originalMessage;
+    std::string model;
+    std::optional<std::string> reasoning_effort;
+    
+    JS_OBJ(originalMessage, model, reasoning_effort);
+};
+
+// Sync request params (empty for now)
+struct SyncParams {
+    // Empty for now, but could add options later
+};
+
+// Reload request params
+struct ReloadParams {
+    std::optional<std::string> source;  // "file", "memory", etc.
+    
+    JS_OBJ(source);
+};
+
+// Generic JSON-RPC Request - for parsing/serialization
+struct JsonRpcRequest {
+    std::string jsonrpc = "2.0";
+    std::optional<int> id;  // No id = notification
+    std::string method;
+    // Note: params deliberately omitted from this struct
+    // We'll handle it separately based on method
+    
+    JS_OBJ(jsonrpc, id, method);
+};
+
+// Template for serializing requests with specific param types
+template<typename ParamsType>
+struct JsonRpcRequestWithParams {
+    std::string jsonrpc = "2.0";
+    std::optional<int> id;
+    std::string method;
+    std::optional<ParamsType> params;
+    
+    JS_OBJ(jsonrpc, id, method, params);
 };
 
 // ============================================================================
@@ -128,6 +202,84 @@ struct ErrorInfo {
     JS_OBJ(code, message, data);
 };
 
+// Template for serializing responses with specific result types
+template<typename ResultType>
+struct JsonRpcResponseWithResult {
+    std::string jsonrpc = "2.0";
+    int id = 0;
+    std::optional<ResultType> result;
+    
+    JS_OBJ(jsonrpc, id, result);
+};
+
+// Template for serializing error responses
+struct JsonRpcErrorResponse {
+    std::string jsonrpc = "2.0";
+    int id = 0;
+    ErrorInfo error;
+    
+    JS_OBJ(jsonrpc, id, error);
+};
+
+// Simple response for operations that just return success/fail
+struct SimpleResponse {
+    bool success;
+    std::optional<std::string> message;
+    
+    JS_OBJ(success, message);
+};
+
+// Rate limit information
+struct RateLimitInfo {
+    int limit = 0;
+    int remaining = 0;
+    int64_t reset_at = 0;  // Unix timestamp
+    
+    JS_OBJ(limit, remaining, reset_at);
+};
+
+// ============================================================================
+// Notification Parameter Types (server -> client events)
+// ============================================================================
+
+// tool.called notification
+struct ToolCalledParams {
+    std::string tool_name;
+    std::optional<std::string> arguments;  // JSON string
+    int64_t timestamp;
+    std::optional<int> request_id;  // ID of the original request that triggered this tool call
+    
+    JS_OBJ(tool_name, arguments, timestamp, request_id);
+};
+
+// tool.result notification
+struct ToolResultParams {
+    std::string tool_name;
+    std::string preview;
+    int total_items;
+    int64_t timestamp;
+    std::optional<int> request_id;  // ID of the original request that triggered this tool
+    
+    JS_OBJ(tool_name, preview, total_items, timestamp, request_id);
+};
+
+// stream.chunk notification
+struct StreamChunkParams {
+    std::string streamId;
+    std::string chunk;
+    int index;
+    
+    JS_OBJ(streamId, chunk, index);
+};
+
+// stream.end notification
+struct StreamEndParams {
+    std::string streamId;
+    int totalChunks;
+    
+    JS_OBJ(streamId, totalChunks);
+};
+
 // ============================================================================
 // Request Builder Class
 // ============================================================================
@@ -135,58 +287,112 @@ struct ErrorInfo {
 class JsonRpcRequestBuilder {
 private:
     static int next_id_;
-    JsonRpcRequest request_;
+    std::string method_;
+    std::optional<int> id_;
+    std::optional<std::string> params_json_;
     
 public:
-    JsonRpcRequestBuilder() {
-        request_.jsonrpc = "2.0";
-    }
+    JsonRpcRequestBuilder() = default;
     
     // Set the method
     JsonRpcRequestBuilder& method(const std::string& m) {
-        request_.method = m;
+        method_ = m;
         return *this;
     }
     
     // Set custom ID
     JsonRpcRequestBuilder& id(int i) {
-        request_.id = i;
+        id_ = i;
         return *this;
     }
     
     // Auto-generate ID
     JsonRpcRequestBuilder& withId() {
-        request_.id = ++next_id_;
+        id_ = ++next_id_;
         return *this;
     }
     
     // No ID (notification)
     JsonRpcRequestBuilder& asNotification() {
-        request_.id = std::nullopt;
+        id_ = std::nullopt;
         return *this;
     }
     
-    // Set params from a struct
+    // Set params from a struct - serialize it properly
     template<typename T>
     JsonRpcRequestBuilder& params(const T& p) {
-        request_.params = toCompactJson(p);
+        // Create a temporary request with params to serialize properly
+        JsonRpcRequestWithParams<T> req;
+        req.jsonrpc = "2.0";
+        req.id = id_;
+        req.method = method_;
+        req.params = p;
+        
+        // Extract just the params part from the serialized JSON
+        std::string full_json = toCompactJson(req);
+        params_json_ = full_json;  // Store for later extraction
         return *this;
     }
     
-    // Set raw JSON params
-    JsonRpcRequestBuilder& paramsJson(const std::string& json) {
-        request_.params = json;
+    // No params
+    JsonRpcRequestBuilder& noParams() {
+        params_json_ = std::nullopt;
         return *this;
     }
     
-    // Build the final request
+    // Build the final request (returns basic structure)
     JsonRpcRequest build() const {
-        return request_;
+        JsonRpcRequest req;
+        req.jsonrpc = "2.0";
+        req.id = id_;
+        req.method = method_;
+        return req;
     }
     
-    // Build and serialize to JSON string
+    // Build and serialize to JSON string with proper params handling
+    template<typename T = std::monostate>
+    std::string buildJson(const T& p = std::monostate{}) const {
+        if constexpr (std::is_same_v<T, std::monostate>) {
+            // No params case - use the stored params_json_ if available
+            if (params_json_.has_value()) {
+                // We already have the full JSON with params
+                return params_json_.value();
+            } else {
+                // No params at all
+                JsonRpcRequest req;
+                req.jsonrpc = "2.0";
+                req.id = id_;
+                req.method = method_;
+                return toCompactJson(req);
+            }
+        } else {
+            // Params provided directly
+            JsonRpcRequestWithParams<T> req;
+            req.jsonrpc = "2.0";
+            req.id = id_;
+            req.method = method_;
+            req.params = p;
+            return toCompactJson(req);
+        }
+    }
+    
+    // Simplified buildJson that works with previously set params
     std::string buildJson() const {
-        return toCompactJson(request_);
+        return buildJson<std::monostate>();
+    }
+    
+    // Build JSON with raw params string (for dynamic cases)
+    std::string buildJsonWithRawParams(const std::string& raw_params) const {
+        std::string json = "{\"jsonrpc\":\"2.0\"";
+        if (id_.has_value()) {
+            json += ",\"id\":" + std::to_string(id_.value());
+        }
+        json += ",\"method\":\"" + method_ + "\"";
+        if (!raw_params.empty() && raw_params != "{}") {
+            json += ",\"params\":" + raw_params;
+        }
+        json += "}";
+        return json;
     }
     
     // Static helper methods for common requests
@@ -222,7 +428,7 @@ public:
         return JsonRpcRequestBuilder()
             .method("tools.list")
             .withId()
-            .paramsJson("{}")
+            .noParams()
             .build();
     }
     
@@ -230,19 +436,18 @@ public:
         return JsonRpcRequestBuilder()
             .method("history.sync")
             .withId()
-            .paramsJson("{}")
+            .noParams()
             .build();
     }
     
     static JsonRpcRequest makeCancel(std::optional<int> targetId = std::nullopt) {
-        std::string params_json = targetId.has_value() 
-            ? "{\"requestId\":" + std::to_string(*targetId) + "}"
-            : "{\"requestId\":null}";
-            
+        CancelParams p;
+        p.requestId = targetId;
+        
         return JsonRpcRequestBuilder()
             .method("request.cancel")
             .withId()
-            .paramsJson(params_json)
+            .params(p)
             .build();
     }
 };
@@ -256,31 +461,29 @@ inline int JsonRpcRequestBuilder::next_id_ = 0;
 
 class JsonRpcResponseBuilder {
 private:
-    JsonRpcResponse response_;
+    int id_ = 0;
+    std::optional<std::string> result_json_;
+    std::optional<ErrorInfo> error_;
     
 public:
-    JsonRpcResponseBuilder() {
-        response_.jsonrpc = "2.0";
-    }
+    JsonRpcResponseBuilder() = default;
     
     // Set the ID (must match request)
     JsonRpcResponseBuilder& id(int i) {
-        response_.id = i;
+        id_ = i;
         return *this;
     }
     
     // Set success result from struct
     template<typename T>
     JsonRpcResponseBuilder& result(const T& r) {
-        response_.result = toCompactJson(r);
-        response_.error = std::nullopt;  // Clear error if setting result
-        return *this;
-    }
-    
-    // Set raw JSON result
-    JsonRpcResponseBuilder& resultJson(const std::string& json) {
-        response_.result = json;
-        response_.error = std::nullopt;
+        // Store the result for later serialization
+        JsonRpcResponseWithResult<T> resp;
+        resp.jsonrpc = "2.0";
+        resp.id = id_;
+        resp.result = r;
+        result_json_ = toCompactJson(resp);
+        error_ = std::nullopt;  // Clear error if setting result
         return *this;
     }
     
@@ -294,35 +497,29 @@ public:
             e.data = data;
         }
         
-        response_.error = toCompactJson(e);
-        response_.result = std::nullopt;  // Clear result if setting error
+        error_ = e;
+        result_json_ = std::nullopt;  // Clear result if setting error
         return *this;
-    }
-    
-    // Build the final response
-    JsonRpcResponse build() const {
-        return response_;
     }
     
     // Build and serialize to JSON string
     std::string buildJson() const {
-        return toCompactJson(response_);
-    }
-    
-    // Static helper for success response
-    static JsonRpcResponse makeSuccess(int id, const std::string& result_json) {
-        return JsonRpcResponseBuilder()
-            .id(id)
-            .resultJson(result_json)
-            .build();
-    }
-    
-    // Static helper for error response
-    static JsonRpcResponse makeError(int id, int code, const std::string& message) {
-        return JsonRpcResponseBuilder()
-            .id(id)
-            .error(code, message)
-            .build();
+        if (error_.has_value()) {
+            JsonRpcErrorResponse resp;
+            resp.jsonrpc = "2.0";
+            resp.id = id_;
+            resp.error = error_.value();
+            return toCompactJson(resp);
+        } else if (result_json_.has_value()) {
+            // Already serialized with proper type
+            return result_json_.value();
+        } else {
+            // No result or error - shouldn't happen but handle gracefully
+            JsonRpcResponse resp;
+            resp.jsonrpc = "2.0";
+            resp.id = id_;
+            return toCompactJson(resp);
+        }
     }
 };
 
@@ -409,27 +606,9 @@ public:
         }
     }
     
-    // Check if response is an error
-    static bool isError(const JsonRpcResponse& response) {
-        return response.error.has_value();
-    }
-    
-    // Extract error details
-    static bool getError(const JsonRpcResponse& response, ErrorInfo& error) {
-        if (!response.error.has_value()) {
-            return false;
-        }
-        return parseParams(*response.error, error);
-    }
-    
-    // Extract result as a specific type
-    template<typename T>
-    static bool getResult(const JsonRpcResponse& response, T& result) {
-        if (!response.result.has_value()) {
-            return false;
-        }
-        return parseParams(*response.result, result);
-    }
+    // Note: isError, getError, getResult methods removed as JsonRpcResponse
+    // no longer contains result/error fields. Parsing should be done based on
+    // the actual JSON structure using simdjson or after determining message type.
 };
 
 } // namespace jsonrpc

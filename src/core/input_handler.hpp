@@ -8,12 +8,15 @@
 #include <fstream>
 #include <sstream>
 #include <set>
+#include <map>
+#include <optional>
 #include <filesystem>
 #include <spdlog/spdlog.h>
 #include <json_struct.h>
 #include <fmt/chrono.h>
 #include "../include/types_core.hpp"
 #include "../include/app_events.hpp"
+#include "../protocol/jsonrpc_messages.hpp"
 #include "state_manager.hpp"
 #include "../network/mcp_client.hpp"
 // Forward declarations to avoid UI dependencies
@@ -35,7 +38,12 @@ private:
   ConversationLogManager* log_manager_ = nullptr;
   CommMode comm_mode_ = CommMode::STANDALONE;
   MCPClient* mcp_client_ = nullptr;
-  int message_id_ = 0;
+  int message_id_ = 0;  // Legacy - kept for compatibility
+  
+  // JSON-RPC 2.0 request tracking
+  int next_request_id_ = 0;  // Sequential ID generator
+  std::map<int, std::string> pending_requests_;  // Track what each ID is for
+  std::optional<int> current_chat_id_;  // Track active chat request for cancellation
   
   Tool* FindTool(const std::string& name);
   void DumpScreen();
@@ -65,6 +73,9 @@ public:
   
   void ProcessCommand(const std::string& command);
   bool HandleEvent(const app::Event& event);
+  
+  // Response tracking for JSON-RPC 2.0
+  void OnResponseReceived(int id);
 };
 
 #endif // INPUT_HANDLER_HPP

@@ -63,6 +63,11 @@ bool HeadlessApplication::Connect(const std::string& host, int port) {
     
     mcp_client_ = std::make_unique<MCPClient>(host, port);
     
+    // Set up callback to handle response IDs for JSON-RPC correlation
+    mcp_client_->SetIdCallback([this](int id) {
+      input_handler_->OnResponseReceived(id);
+    });
+    
     // Set up message callback
     mcp_client_->SetResponseCallback([this](const std::string& type, const std::string& content) {
         // Process server messages inline

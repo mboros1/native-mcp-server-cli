@@ -45,21 +45,46 @@ void InputHandler::RequestSyncCheck(bool retry) {
   
   if (comm_mode_ == CommMode::IPC && mcp_client_ && mcp_client_->IsConnected()) {
     if (retry) {
-      std::string request = R"({"type": "sync", "content": "request_history"})";
-      mcp_client_->SendRequest(request);
+      // Build JSON-RPC 2.0 sync request
+      auto request = jsonrpc::JsonRpcRequestBuilder()
+          .method("history.sync")
+          .id(++next_request_id_)
+          .noParams()  // Empty params for sync
+          .build();
+      
+      pending_requests_[*request.id] = "sync";
+      std::string json = jsonrpc::toCompactJson(request);
+      mcp_client_->SendRequest(json);
       AddLogEntryWithNotification(LogEntryType::SYSTEM, "Requesting chat history sync check...");
-      SPDLOG_DEBUG("Sent sync request to server (retry={})", retry);
+      SPDLOG_DEBUG("Sent JSON-RPC sync request to server (retry={})", retry);
     } else {
       // On retry attempt, first send reload request
-      std::string reload_request = R"({"type": "reload", "content": "chat_history"})";
-      mcp_client_->SendRequest(reload_request);
+      auto reload_request = jsonrpc::JsonRpcRequestBuilder()
+          .method("history.reload")
+          .id(++next_request_id_)
+          .params(jsonrpc::ReloadParams{
+              .source = "file"
+          })
+          .build();
+      
+      pending_requests_[*reload_request.id] = "reload";
+      std::string reload_json = jsonrpc::toCompactJson(reload_request);
+      mcp_client_->SendRequest(reload_json);
       AddLogEntryWithNotification(LogEntryType::SYSTEM, "Server out of sync - requesting reload and retry...");
-      SPDLOG_DEBUG("Sent reload request, will sync again");
+      SPDLOG_DEBUG("Sent JSON-RPC reload request, will sync again");
       
       // Small delay then send sync request
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      std::string sync_request = R"({"type": "sync", "content": "request_history"})";
-      mcp_client_->SendRequest(sync_request);
+      
+      auto sync_request = jsonrpc::JsonRpcRequestBuilder()
+          .method("history.sync")
+          .id(++next_request_id_)
+          .noParams()
+          .build();
+      
+      pending_requests_[*sync_request.id] = "sync-retry";
+      std::string sync_json = jsonrpc::toCompactJson(sync_request);
+      mcp_client_->SendRequest(sync_json);
     }
   } else {
     AddLogEntryWithNotification(LogEntryType::ERROR, "Sync command requires connection to MCP server");
@@ -138,15 +163,24 @@ void InputHandler::SendInterrupt() {
   
   SPDLOG_INFO("Sending interrupt request");
   
-  // Build strongly-typed interrupt request
-  InterruptRequest request;
+  // Build JSON-RPC 2.0 cancel request with designated initializers
+  auto request = jsonrpc::JsonRpcRequestBuilder()
+      .method("request.cancel")
+      .id(++next_request_id_)
+      .params(jsonrpc::CancelParams{
+          .requestId = current_chat_id_  // Will be nullopt if no active chat
+      })
+      .build();
   
-  // Serialize to JSON using json_struct
-  std::string json = JS::serializeStruct(request, JS::SerializerOptions(JS::SerializerOptions::Compact));
+  pending_requests_[*request.id] = "cancel";
+  
+  std::string json = jsonrpc::toCompactJson(request);
+  SPDLOG_INFO("Sending JSON-RPC cancel request: {}", json);
   mcp_client_->SendRequest(json);
   
   // Clear awaiting response state immediately
   state_.ClearAwaitingResponse();
+  current_chat_id_.reset();
   AddLogEntryWithNotification(LogEntryType::SYSTEM, "Interrupt sent - cancelling request");
 }
 
@@ -164,14 +198,23 @@ void InputHandler::SendRetryRequest() {
   std::string original_message = state_.GetRetryOriginalMessage();
   SPDLOG_INFO("Sending retry request for message: {}", original_message);
   
-  // Build strongly-typed retry request
-  RetryRequest request;
-  request.originalMessage = original_message;
-  request.model = config_.model;
-  request.reasoning_effort = config_.reasoning_effort;
+  // Build JSON-RPC 2.0 retry request with designated initializers
+  auto request = jsonrpc::JsonRpcRequestBuilder()
+      .method("chat.retry")
+      .id(++next_request_id_)
+      .params(jsonrpc::RetryParams{
+          .originalMessage = original_message,
+          .model = config_.model,
+          .reasoning_effort = config_.reasoning_effort
+      })
+      .build();
   
-  // Serialize to JSON using json_struct
-  std::string json = JS::serializeStruct(request, JS::SerializerOptions(JS::SerializerOptions::Compact));
+  // Track as new chat request
+  current_chat_id_ = request.id.value();
+  pending_requests_[*request.id] = "retry";
+  
+  std::string json = jsonrpc::toCompactJson(request);
+  SPDLOG_INFO("Sending JSON-RPC retry request: {}", json);
   mcp_client_->SendRequest(json);
   
   // Clear retry state and add log entry
@@ -204,50 +247,78 @@ void InputHandler::SendChatMessage(const std::string& message) {
   // Set awaiting response state
   state_.SetAwaitingResponse(message);
   
-  // Build strongly-typed request
-  ChatRequest request;
-  request.id = ++message_id_;
-  request.content = message;
-  request.model = config_.model;
-  request.reasoning_effort = config_.reasoning_effort;
-  request.timeout = state_.GetServerTimeout().count();
+  // Build JSON-RPC 2.0 request with designated initializers
+  auto request = jsonrpc::JsonRpcRequestBuilder()
+      .method("chat.send")
+      .id(++next_request_id_)
+      .params(jsonrpc::ChatParams{
+          .content = message,
+          .model = config_.model,
+          .timeout = static_cast<int>(state_.GetServerTimeout().count()),
+          .reasoning_effort = config_.reasoning_effort
+      })
+      .build();
   
-  // Serialize to JSON using json_struct
-  std::string json = JS::serializeStruct(request, JS::SerializerOptions(JS::SerializerOptions::Compact));
+  // Track request for correlation
+  current_chat_id_ = request.id.value();
+  pending_requests_[*request.id] = "chat";
   
-  SPDLOG_INFO("Sending chat JSON: {}", json);
+  std::string json = jsonrpc::toCompactJson(request);
+  SPDLOG_INFO("Sending JSON-RPC chat request: {}", json);
   mcp_client_->SendRequest(json);
 }
 
 void InputHandler::SendMCPRequest(const std::string& method, const std::string& params) {
   if (comm_mode_ != CommMode::IPC || !mcp_client_) return;
   
-  std::stringstream json;
-  json << "{\"jsonrpc\":\"2.0\",\"method\":\"" << method 
-       << "\",\"id\":" << ++message_id_;
-  if (!params.empty()) {
-    json << ",\"params\":" << params;
-  } else {
-    json << ",\"params\":{}";
-  }
-  json << "}";
+  int request_id = ++next_request_id_;
+  std::string json;
   
-  SPDLOG_INFO("Sending MCP request: {}", json.str());
-  mcp_client_->SendRequest(json.str());
+  // Determine the correct param type based on method
+  if (method == "tools/list" || method == "tools.list") {
+    // No params for tools.list
+    json = jsonrpc::JsonRpcRequestBuilder()
+        .method("tools.list")  // Normalize to dot notation
+        .id(request_id)
+        .noParams()
+        .buildJson();
+  } else {
+    // For unknown methods, log warning but still send with no params
+    SPDLOG_WARN("Unknown method in SendMCPRequest: {}", method);
+    json = jsonrpc::JsonRpcRequestBuilder()
+        .method(method)
+        .id(request_id)
+        .noParams()
+        .buildJson();
+  }
+  
+  pending_requests_[request_id] = method;
+  
+  SPDLOG_INFO("Sending JSON-RPC MCP request: {}", json);
+  mcp_client_->SendRequest(json);
 }
 
 void InputHandler::SendToolCall(const std::string& toolName, const std::string& args) {
   if (comm_mode_ != CommMode::IPC || !mcp_client_) return;
   
-  std::stringstream json;
-  json << "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"id\":" << ++message_id_ 
-       << ",\"params\":{\"name\":\"" << EscapeJSON(toolName) << "\"";
+  // Build JSON-RPC 2.0 tool execution request with typed params
+  jsonrpc::ToolExecuteParams params;
+  params.name = toolName;
   if (!args.empty()) {
-    json << ",\"arguments\":" << args; // Assume args is already JSON
+    params.arguments = args;  // Assume args is already JSON
   }
-  json << "}}";
   
-  mcp_client_->SendRequest(json.str());
+  auto request = jsonrpc::JsonRpcRequestBuilder()
+      .method("tools.execute")
+      .id(++next_request_id_)
+      .params(params)
+      .build();
+  
+  pending_requests_[*request.id] = "tool:" + toolName;
+  std::string json = jsonrpc::toCompactJson(request);
+  
+  SPDLOG_INFO("Sending JSON-RPC tool call: {}", json);
+  mcp_client_->SendRequest(json);
 }
 
 std::string InputHandler::EscapeJSON(const std::string& str) {
@@ -468,9 +539,20 @@ void InputHandler::ProcessCommand(const std::string& command) {
           
           // Notify server to reload the new chat history
           if (mcp_client_ && mcp_client_->IsConnected()) {
-            std::string reload_request = R"({"type": "reload", "content": "chat_history"})";
-            mcp_client_->SendRequest(reload_request);
-            SPDLOG_INFO("Sent reload request to server after loading conversation #{}", index);
+            // Build JSON-RPC 2.0 reload request
+            jsonrpc::ReloadParams params;
+            params.source = "file";
+            
+            auto reload_request = jsonrpc::JsonRpcRequestBuilder()
+                .method("history.reload")
+                .id(++next_request_id_)
+                .params(params)
+                .build();
+            
+            pending_requests_[*reload_request.id] = "reload-after-load";
+            std::string json = jsonrpc::toCompactJson(reload_request);
+            mcp_client_->SendRequest(json);
+            SPDLOG_INFO("Sent JSON-RPC reload request to server after loading conversation #{}", index);
           }
           
           AddLogEntryWithNotification(LogEntryType::SYSTEM, 
@@ -503,9 +585,17 @@ void InputHandler::ProcessCommand(const std::string& command) {
         state_.RotateChatHistoryFile();
         state_.ResetTokenCount();
         state_.ClearEventLog();
-        std::string request = R"({"type": "chat", "content": "/new"})";
-        mcp_client_->SendRequest(request);
-        SPDLOG_DEBUG("Rotated chat history file, reset token count and cleared conversation log");
+        
+        // Build JSON-RPC 2.0 new conversation request
+        auto request = jsonrpc::JsonRpcRequestBuilder()
+            .method("chat.new")
+            .id(++next_request_id_)
+            .build();
+        
+        pending_requests_[*request.id] = "new";
+        std::string json = jsonrpc::toCompactJson(request);
+        mcp_client_->SendRequest(json);
+        SPDLOG_DEBUG("Sent JSON-RPC chat.new request, rotated chat history file, reset token count and cleared conversation log");
       } else {
         AddLogEntryWithNotification(LogEntryType::ERROR, "New conversation command requires connection to MCP server");
       }
@@ -517,12 +607,20 @@ void InputHandler::ProcessCommand(const std::string& command) {
       if (state_.IsAwaitingResponse()) {
         // Send reset command to server to clear its processing state
         if (comm_mode_ == CommMode::IPC && mcp_client_ && mcp_client_->IsConnected()) {
-          std::string request = R"({"type": "reset"})";
-          mcp_client_->SendRequest(request);
-          AddLogEntryWithNotification(LogEntryType::SYSTEM, "Sent reset request to server");
+          // Build JSON-RPC 2.0 reset request
+          auto request = jsonrpc::JsonRpcRequestBuilder()
+              .method("session.reset")
+              .id(++next_request_id_)
+              .build();
+          
+          pending_requests_[*request.id] = "reset";
+          std::string json = jsonrpc::toCompactJson(request);
+          mcp_client_->SendRequest(json);
+          AddLogEntryWithNotification(LogEntryType::SYSTEM, "Sent JSON-RPC reset request to server");
         }
         
         state_.ClearAwaitingResponse();
+        current_chat_id_.reset();  // Clear any active chat ID
         AddLogEntryWithNotification(LogEntryType::SYSTEM, "Manually reset awaiting response state");
       } else {
         AddLogEntryWithNotification(LogEntryType::SYSTEM, "No active request to reset");
@@ -582,4 +680,33 @@ bool InputHandler::HandleEvent(const app::Event& event) {
   // Not here in InputHandler
   
   return false;
+}
+
+void InputHandler::OnResponseReceived(int id) {
+  // Handle response correlation for JSON-RPC 2.0
+  if (pending_requests_.count(id)) {
+    std::string request_type = pending_requests_[id];
+    pending_requests_.erase(id);
+    
+    SPDLOG_DEBUG("Received response for request {} (type: {})", id, request_type);
+    
+    // Clear awaiting state if this was the active chat request
+    if (request_type == "chat" || request_type == "retry") {
+      if (current_chat_id_ && *current_chat_id_ == id) {
+        current_chat_id_.reset();
+        state_.ClearAwaitingResponse();
+      }
+    }
+    
+    // Log specific handling for different request types
+    if (request_type == "sync" || request_type == "sync-retry") {
+      SPDLOG_DEBUG("Sync response received");
+    } else if (request_type == "reload" || request_type == "reload-after-load") {
+      SPDLOG_DEBUG("Reload response received");
+    } else if (request_type == "new") {
+      SPDLOG_DEBUG("New conversation response received");
+    }
+  } else {
+    SPDLOG_WARN("Received response for unknown request ID: {}", id);
+  }
 }

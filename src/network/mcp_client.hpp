@@ -11,6 +11,7 @@
 #include <simdjson.h>
 #include "../tcp_client.hpp"
 #include "../include/types_core.hpp"
+#include "../protocol/jsonrpc_messages.hpp"
 
 using namespace simdjson;
 
@@ -23,6 +24,7 @@ private:
   std::string host_;
   int port_;
   std::function<void(const std::string&, const std::string&)> response_callback_;
+  std::function<void(int)> id_callback_;  // Callback for JSON-RPC response IDs
 
 public:
   MCPClient(const std::string& host = "127.0.0.1", int port = 4000);
@@ -33,8 +35,13 @@ public:
   void Stop();
   void SendRequest(const std::string& json);
   void SetResponseCallback(std::function<void(const std::string&, const std::string&)> callback);
+  void SetIdCallback(std::function<void(int)> callback) { id_callback_ = callback; }
 
 private:
   void ProcessEvents();
   void HandleServerMessage(const std::string& message);
+  void HandleJsonRpcMessage(const dom::element& doc);
+  void HandleJsonRpcError(const dom::element& error, int id);
+  void HandleJsonRpcResult(const dom::element& result, const dom::element& method_elem, int id);
+  void HandleJsonRpcNotification(const std::string& method, const dom::element& params);
 };

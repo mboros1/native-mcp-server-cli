@@ -153,6 +153,8 @@ private:
         Session(asio::ip::tcp::socket socket, MockTcpServer& server)
             : socket_(std::move(socket)), server_(server) {
             server_.connection_count_++;
+            // Disable Nagle's algorithm for low latency
+            socket_.set_option(asio::ip::tcp::no_delay(true));
         }
         
         ~Session() {
@@ -196,23 +198,34 @@ private:
                         // If no queued response, use callback
                         if (response.empty() && server_.response_callback_) {
                             response = server_.response_callback_(message);
+                            SPDLOG_DEBUG("Response from callback: {}", response.substr(0, 200));
                         }
                         
                         // Default to echo if no response configured
                         if (response.empty()) {
                             response = "ECHO: " + message;
+                            SPDLOG_DEBUG("Using default echo response");
                         }
                         
-                        DoWrite(response);
+                        // CRITICAL: Add newline for framing (client expects newline-delimited JSON)
+                        if (!response.empty() && response.back() != '\n') {
+                            response.push_back('\n');
+                        }
+                        
+                        SPDLOG_DEBUG("Sending response: {}", response.substr(0, 200));
+                        
+                        // Store response in a member to keep it alive during async write
+                        write_buffer_ = std::move(response);
+                        DoWrite();
                     }
                 });
         }
         
-        void DoWrite(const std::string& message) {
+        void DoWrite() {
             auto self(shared_from_this());
             asio::async_write(
                 socket_,
-                asio::buffer(message),
+                asio::buffer(write_buffer_),
                 [this, self](std::error_code ec, std::size_t /*length*/) {
                     if (!ec) {
                         DoRead();
@@ -224,6 +237,7 @@ private:
         MockTcpServer& server_;
         enum { max_length = 4096 };
         char data_[max_length];
+        std::string write_buffer_;  // Keeps response alive during async write
     };
     
     void StartAccept() {
