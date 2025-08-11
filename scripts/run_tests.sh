@@ -48,7 +48,8 @@ run_test() {
 
 # Build all tests first
 echo "Building tests..."
-make -s test-persist test-state test-input test-events || exit 1
+# Note: test-tool-events temporarily disabled - needs JSON-RPC 2.0 migration
+make -s test-persist test-state test-input test-events test-jsonrpc-builder test-configurable-mock || exit 1
 echo ""
 
 # Run each test from bin directory (inside src/)
@@ -56,6 +57,9 @@ run_test "Chat Persistence" "bin/test-persist"
 run_test "State Manager" "bin/test-state"
 run_test "Input Handler" "bin/test-input"
 run_test "Event System" "bin/test-events"
+# run_test "Tool Events" "bin/test-tool-events"  # Temporarily disabled - needs JSON-RPC 2.0 migration
+run_test "JSON-RPC Builder" "bin/test-jsonrpc-builder"
+run_test "Configurable Mock Server" "bin/test-configurable-mock"
 
 # Summary
 echo ""

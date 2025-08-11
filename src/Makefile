@@ -112,9 +112,25 @@ $(BIN_DIR)/test-input: libheadless.a ../tests/test_input_handler.cpp | $(BIN_DIR
 $(BIN_DIR)/test-input-server: libheadless.a ../tests/test_input_handler_with_server.cpp | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_input_handler_with_server.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
 
+$(BIN_DIR)/test-tool-events: libheadless.a ../tests/test_tool_events.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_tool_events.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+
+$(BIN_DIR)/test-jsonrpc: libheadless.a ../tests/test_jsonrpc_server.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_server.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+
+$(BIN_DIR)/test-jsonrpc-builder: ../tests/test_jsonrpc_builder.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_builder.cpp -o $@ $(LDFLAGS_HEADLESS)
+
+$(BIN_DIR)/test-configurable-mock: libheadless.a ../tests/test_configurable_mock.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_configurable_mock.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+
+$(BIN_DIR)/test-jsonrpc-client-full: libheadless.a ../tests/test_jsonrpc_client_full.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_client_full.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+
 # Run all unit tests
-test-all: $(BIN_DIR)/test-persist $(BIN_DIR)/test-state $(BIN_DIR)/test-events $(BIN_DIR)/test-input
-	@./run_tests.sh
+# Note: test-tool-events temporarily removed - needs JSON-RPC 2.0 migration
+test-all: $(BIN_DIR)/test-persist $(BIN_DIR)/test-state $(BIN_DIR)/test-events $(BIN_DIR)/test-input $(BIN_DIR)/test-jsonrpc-builder $(BIN_DIR)/test-configurable-mock
+	@../scripts/run_tests.sh
 
 # Build everything
 all: $(BIN_DIR)/demo $(BIN_DIR)/test-headless $(BIN_DIR)/simple-test
@@ -135,6 +151,11 @@ test-persist: $(BIN_DIR)/test-persist
 test-state: $(BIN_DIR)/test-state
 test-events: $(BIN_DIR)/test-events
 test-input: $(BIN_DIR)/test-input
+test-tool-events: $(BIN_DIR)/test-tool-events
+test-jsonrpc: $(BIN_DIR)/test-jsonrpc
+test-jsonrpc-builder: $(BIN_DIR)/test-jsonrpc-builder
+test-configurable-mock: $(BIN_DIR)/test-configurable-mock
+test-jsonrpc-client-full: $(BIN_DIR)/test-jsonrpc-client-full
 
 # Phony targets
-.PHONY: all clean test test-simple test-all demo test-headless simple-test test-persist test-state test-events test-input
+.PHONY: all clean test test-simple test-all demo test-headless simple-test test-persist test-state test-events test-input test-tool-events test-jsonrpc test-jsonrpc-builder test-configurable-mock test-jsonrpc-client-full

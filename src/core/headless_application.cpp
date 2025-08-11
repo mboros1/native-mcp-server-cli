@@ -75,6 +75,9 @@ bool HeadlessApplication::Connect(const std::string& host, int port) {
         } else if (type == "ERROR") {
             state_.ClearAwaitingResponse();
             NotifyMessage(LogEntryType::ERROR, content);
+        } else if (type == "TOOL_EVENT") {
+            // Handle tool-related events (tool calls, results, errors, info)
+            NotifyMessage(LogEntryType::SYSTEM, content);
         }
     });
     

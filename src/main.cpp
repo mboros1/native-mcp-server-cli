@@ -419,6 +419,11 @@ public:
             state_.ClearAwaitingResponse();
             
             input_handler_->AddLogEntryWithNotification(LogEntryType::ERROR, content);
+          } else if (type == "TOOL_EVENT") {
+            // Handle tool-related events (tool calls, results, errors, info)
+            // Write to chat history so it's persisted
+            state_.WriteToChatHistory("system", content);
+            input_handler_->AddLogEntryWithNotification(LogEntryType::SYSTEM, content);
           }
         });
         

@@ -465,6 +465,14 @@ void InputHandler::ProcessCommand(const std::string& command) {
           // Clear event log and reload
           state_.ClearEventLog();
           state_.LoadChatHistoryOnStartup();
+          
+          // Notify server to reload the new chat history
+          if (mcp_client_ && mcp_client_->IsConnected()) {
+            std::string reload_request = R"({"type": "reload", "content": "chat_history"})";
+            mcp_client_->SendRequest(reload_request);
+            SPDLOG_INFO("Sent reload request to server after loading conversation #{}", index);
+          }
+          
           AddLogEntryWithNotification(LogEntryType::SYSTEM, 
                                       "Loaded conversation #" + std::to_string(index));
         } else {

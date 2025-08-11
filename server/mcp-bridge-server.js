@@ -212,7 +212,12 @@ async function processChatMessage(socket, clientId, messageContent, clientTimeou
         addToMemoryHistory('user', messageContent);
         
         // Build full conversation history for API call
-        const messages = [...chatHistory];
+        // CRITICAL: Include system prompt so LLM understands it has conversation history
+        const systemPrompt = {
+            role: 'system',
+            content: 'You are a helpful AI assistant. You have access to the conversation history below.'
+        };
+        const messages = [systemPrompt, ...chatHistory];
 
         // Use client-provided timeout or default to 5 minutes
         const timeoutMs = clientTimeout || (5 * 60 * 1000);
@@ -289,7 +294,38 @@ async function processChatMessage(socket, clientId, messageContent, clientTimeou
                     
                     try {
                         const args = JSON.parse(func.arguments);
+                        
+                        // Send tool call event to UI
+                        socket.write(JSON.stringify({
+                            type: 'tool_call',
+                            tool_name: func.name,
+                            arguments: args,
+                            timestamp: Date.now()
+                        }) + '\n');
+                        
                         const result = await executeTool(func.name, args);
+                        
+                        // Send tool result preview to UI (first 20 lines)
+                        let preview = '';
+                        if (result.entries && Array.isArray(result.entries)) {
+                            preview = result.entries.slice(0, 20).map(e => 
+                                `  ${e.type === 'dir' ? '📁' : '📄'} ${e.path}`
+                            ).join('\n');
+                            if (result.entries.length > 20) {
+                                preview += `\n  ... and ${result.entries.length - 20} more`;
+                            }
+                        } else {
+                            preview = JSON.stringify(result, null, 2).split('\n').slice(0, 20).join('\n');
+                        }
+                        
+                        socket.write(JSON.stringify({
+                            type: 'tool_result_preview',
+                            tool_name: func.name,
+                            preview: preview,
+                            total_items: result.entries ? result.entries.length : 0,
+                            timestamp: Date.now()
+                        }) + '\n');
+                        
                         toolResults.push({
                             tool_call_id: toolCall.id,
                             role: 'tool',
@@ -298,6 +334,13 @@ async function processChatMessage(socket, clientId, messageContent, clientTimeou
                         });
                         log(`Tool ${func.name} executed successfully`);
                     } catch (error) {
+                        socket.write(JSON.stringify({
+                            type: 'tool_error',
+                            tool_name: func.name,
+                            error: error.message,
+                            timestamp: Date.now()
+                        }) + '\n');
+                        
                         toolResults.push({
                             tool_call_id: toolCall.id,
                             role: 'tool',
@@ -324,6 +367,15 @@ async function processChatMessage(socket, clientId, messageContent, clientTimeou
                 
                 replyText = followUpResp.choices[0].message.content;
             } else {
+                // No tool calls made despite tools being available
+                if (tools && tools.length > 0) {
+                    log(`Model did not call any tools despite ${tools.length} being available`);
+                    socket.write(JSON.stringify({
+                        type: 'tool_info',
+                        message: `AI response without tools (${tools.length} available)`,
+                        timestamp: Date.now()
+                    }) + '\n');
+                }
                 replyText = choice.message.content;
             }
         }

@@ -92,6 +92,8 @@ void MCPClient::ProcessEvents() {
 }
 
 void MCPClient::HandleServerMessage(const std::string& message) {
+  SPDLOG_DEBUG("HandleServerMessage called with: {}", message.substr(0, 100));
+  
   if (!response_callback_) {
     SPDLOG_WARN("No response callback set, cannot process server message");
     return;
@@ -111,6 +113,7 @@ void MCPClient::HandleServerMessage(const std::string& message) {
     // Check message type
     if (doc["type"].is_string()) {
       std::string type = std::string(doc["type"].get_string().value());
+      SPDLOG_DEBUG("Received message type: {}", type);
       
       if (type == "response") {
         if (doc["reply"].is_string()) {
@@ -149,6 +152,56 @@ void MCPClient::HandleServerMessage(const std::string& message) {
           SPDLOG_ERROR("Received error from server: {}", error_msg);
           response_callback_("ERROR", "Server error: " + error_msg);
         }
+      } else if (type == "tool_call") {
+        // Handle tool call event
+        std::string tool_name = doc["tool_name"].is_string() ? 
+          std::string(doc["tool_name"].get_string().value()) : "unknown";
+        
+        std::string args_str = "{}";
+        if (doc["arguments"].is_object()) {
+          dom::element args = doc["arguments"].value();
+          args_str = simdjson::minify(args);
+        }
+        
+        std::string log_msg = "🔧 Tool call: " + tool_name + " with args: " + args_str;
+        SPDLOG_INFO("Tool call: {}", log_msg);
+        response_callback_("TOOL_EVENT", log_msg);
+        
+      } else if (type == "tool_result_preview") {
+        // Handle tool result preview
+        std::string tool_name = doc["tool_name"].is_string() ? 
+          std::string(doc["tool_name"].get_string().value()) : "unknown";
+        std::string preview = doc["preview"].is_string() ? 
+          std::string(doc["preview"].get_string().value()) : "";
+        int64_t total_items = doc["total_items"].is_int64() ? 
+          doc["total_items"].get_int64().value() : 0;
+        
+        std::string log_msg = "📋 Tool result for " + tool_name + ":\n" + preview;
+        if (total_items > 0) {
+          log_msg += "\n(Total items: " + std::to_string(total_items) + ")";
+        }
+        SPDLOG_INFO("Tool result preview: {}", tool_name);
+        response_callback_("TOOL_EVENT", log_msg);
+        
+      } else if (type == "tool_error") {
+        // Handle tool error
+        std::string tool_name = doc["tool_name"].is_string() ? 
+          std::string(doc["tool_name"].get_string().value()) : "unknown";
+        std::string error = doc["error"].is_string() ? 
+          std::string(doc["error"].get_string().value()) : "Unknown error";
+        
+        std::string log_msg = "❌ Tool error for " + tool_name + ": " + error;
+        SPDLOG_ERROR("Tool error: {}", log_msg);
+        response_callback_("TOOL_EVENT", log_msg);
+        
+      } else if (type == "tool_info") {
+        // Handle tool info (when AI doesn't call tools)
+        std::string msg = doc["message"].is_string() ? 
+          std::string(doc["message"].get_string().value()) : "";
+        
+        std::string log_msg = "ℹ️ " + msg;
+        SPDLOG_INFO("Tool info: {}", msg);
+        response_callback_("TOOL_EVENT", log_msg);
       }
     } else {
       SPDLOG_DEBUG("Received non-chat message: {}", message);
