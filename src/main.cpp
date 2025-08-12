@@ -127,6 +127,38 @@ private:
       paragraph(entry.content) | color(style.content_color) | size(WIDTH, LESS_THAN, content_width)
     });
   }
+  
+  // Helper method to render the event log
+  Element RenderEventLog() {
+    Elements log_elements;
+    const auto& log = state_.GetEventLog();
+    
+    // Render all log entries
+    for (const auto& entry : log) {
+      // Format timestamp
+      auto time_t = std::chrono::system_clock::to_time_t(entry.timestamp);
+      char time_str[20];
+      std::strftime(time_str, sizeof(time_str), "%H:%M:%S", std::localtime(&time_t));
+      
+      // Use our helper method to render the log entry
+      log_elements.push_back(RenderLogEntry(entry, time_str));
+    }
+    
+    // If empty, show placeholder
+    if (log_elements.empty()) {
+      log_elements.push_back(
+        text("Welcome! Type a message or use /help for available commands.") 
+        | color(Colors::kGray) | center
+      );
+    }
+    
+    // Create the scrollable log with proper relative positioning
+    return vbox(std::move(log_elements))
+         | focusPositionRelative(0.0f, log_manager_.scroll_y_)  // Use relative positioning
+         | frame
+         | flex
+         | vscroll_indicator;
+  }
 
 public:
   Application() : screen_(ScreenInteractive::Fullscreen()) {
@@ -157,37 +189,7 @@ public:
     
     // Create conversation log component using Renderer
     auto event_log_renderer = Renderer([this] {
-      Elements log_elements;
-      const auto& log = state_.GetEventLog();
-      
-      // Render all log entries
-      for (const auto& entry : log) {
-        Element line;
-        
-        // Format timestamp
-        auto time_t = std::chrono::system_clock::to_time_t(entry.timestamp);
-        char time_str[20];
-        std::strftime(time_str, sizeof(time_str), "%H:%M:%S", std::localtime(&time_t));
-        
-        // Use our new helper method to render the log entry
-        line = RenderLogEntry(entry, time_str);
-        log_elements.push_back(line);
-      }
-      
-      // If empty, show placeholder
-      if (log_elements.empty()) {
-        log_elements.push_back(
-          text("Welcome! Type a message or use /help for available commands.") 
-          | color(Colors::kGray) | center
-        );
-      }
-      
-      // Create the scrollable log with proper relative positioning
-      return vbox(std::move(log_elements))
-           | focusPositionRelative(0.0f, log_manager_.scroll_y_)  // Use relative positioning
-           | frame
-           | flex
-           | vscroll_indicator;
+      return RenderEventLog();
     });
     
     // Wrap with event handler for scrolling
