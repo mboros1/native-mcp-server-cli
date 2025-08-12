@@ -33,8 +33,8 @@ for TEST_FILE in $TEST_FILES; do
     echo "Running: $TEST_NAME"
     echo "-----------------------------------------"
     
-    # Run the test
-    node $TEST_FILE
+    # Run the test with console output enabled
+    DEBUG_CONSOLE=true node $TEST_FILE
     EXIT_CODE=$?
     
     TOTAL_TESTS=$((TOTAL_TESTS + 1))
