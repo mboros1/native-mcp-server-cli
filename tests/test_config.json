@@ -1,0 +1,9 @@
+{
+    "ui": {
+        "welcomeMessage": "Test HeadlessApplication"
+    },
+    "settings": {
+        "maxHistorySize": 100
+    },
+    "tools": []
+}

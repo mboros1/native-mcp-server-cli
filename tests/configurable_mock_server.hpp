@@ -225,7 +225,7 @@ private:
         
         // Extract basic fields
         std::string method;
-        std::optional<int> id;
+        std::optional<int64_t> id;
         
         if (doc["method"].is_string()) {
             method = std::string(doc["method"].get_string().value());
@@ -238,26 +238,38 @@ private:
                 .buildJson();
         }
         
+        // Check what type simdjson sees for the ID
         if (doc["id"].is_int64()) {
-            id = doc["id"].get_int64().value();
-            SPDLOG_INFO("ID (int64): {}", id.value());
+            int64_t id_val = doc["id"].get_int64().value();
+            id = id_val;
+            SPDLOG_INFO("ID parsed as int64: {}", id_val);
         } else if (doc["id"].is_uint64()) {
-            id = static_cast<int>(doc["id"].get_uint64().value());
-            SPDLOG_INFO("ID (uint64): {}", id.value());
+            uint64_t id_val = doc["id"].get_uint64().value();
+            id = static_cast<int64_t>(id_val);
+            SPDLOG_INFO("ID parsed as uint64: {} -> int64: {}", id_val, id.value());
         } else if (doc["id"].is_null()) {
             SPDLOG_INFO("ID is null (notification)");
         } else {
             SPDLOG_INFO("ID field not present or not a number");
         }
         
-        // Check params
-        if (!doc["params"].is_null()) {
-            SPDLOG_INFO("Has params field");
-            // Try to stringify the params
-            std::string params_str = simdjson::minify(doc["params"]);
-            SPDLOG_INFO("Params: {}", params_str);
-        } else {
-            SPDLOG_INFO("No params field");
+        // Check params - use safe access with try-catch
+        try {
+            if (doc["params"].error() == simdjson::SUCCESS) {
+                simdjson::dom::element params = doc["params"];
+                if (!params.is_null()) {
+                    SPDLOG_INFO("Has params field");
+                    // Try to stringify the params
+                    std::string params_str = simdjson::minify(params);
+                    SPDLOG_INFO("Params: {}", params_str);
+                } else {
+                    SPDLOG_INFO("Params field is null");
+                }
+            } else {
+                SPDLOG_INFO("No params field");
+            }
+        } catch (const simdjson::simdjson_error& e) {
+            SPDLOG_INFO("No params field (exception: {})", e.what());
         }
         
         // Update statistics

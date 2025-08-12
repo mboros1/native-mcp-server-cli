@@ -21,6 +21,10 @@ void InputHandler::SetMCPClient(MCPClient* client) {
   mcp_client_ = client;
 }
 
+void InputHandler::SetNotificationCallback(NotificationCallback callback) {
+  notification_callback_ = callback;
+}
+
 Tool* InputHandler::FindTool(const std::string& name) {
   for (auto& tool : tools_) {
     if (tool.name == name) {
@@ -93,8 +97,16 @@ void InputHandler::RequestSyncCheck(bool retry) {
 
 void InputHandler::AddLogEntryWithNotification(LogEntryType type, const std::string& content) {
   state_.AddLogEntry(type, content);
-  // Notification to log manager only available in UI mode
-  // In headless mode, we just update the state
+  
+  // Notify UI if available
+  if (log_manager_) {
+    // UI mode notification
+  }
+  
+  // Notify headless callback if set
+  if (notification_callback_) {
+    notification_callback_(type, content);
+  }
 }
 
 void InputHandler::LoadConfig() {
@@ -168,7 +180,7 @@ void InputHandler::SendInterrupt() {
       .method("request.cancel")
       .id(++next_request_id_)
       .params(jsonrpc::CancelParams{
-          .requestId = current_chat_id_  // Will be nullopt if no active chat
+          .request_id = current_chat_id_ ? std::optional<int64_t>(*current_chat_id_) : std::nullopt
       })
       .build();
   
@@ -247,25 +259,33 @@ void InputHandler::SendChatMessage(const std::string& message) {
   // Set awaiting response state
   state_.SetAwaitingResponse(message);
   
-  // Build JSON-RPC 2.0 request with designated initializers
-  auto request = jsonrpc::JsonRpcRequestBuilder()
-      .method("chat.send")
-      .id(++next_request_id_)
-      .params(jsonrpc::ChatParams{
-          .content = message,
-          .model = config_.model,
-          .timeout = static_cast<int>(state_.GetServerTimeout().count()),
-          .reasoning_effort = config_.reasoning_effort
-      })
-      .build();
+  // Use type-safe procedure call
+  jsonrpc::ChatParams params{
+      .content = message,
+      .model = config_.model,
+      .timeout = static_cast<int>(state_.GetServerTimeout().count()),
+      .reasoning_effort = config_.reasoning_effort
+  };
   
-  // Track request for correlation
-  current_chat_id_ = request.id.value();
-  pending_requests_[*request.id] = "chat";
+  SPDLOG_INFO("Sending chat message via type-safe procedure");
   
-  std::string json = jsonrpc::toCompactJson(request);
-  SPDLOG_INFO("Sending JSON-RPC chat request: {}", json);
-  mcp_client_->SendRequest(json);
+  // Use the type-safe Call method which generates random IDs internally
+  mcp_client_->Call(jsonrpc::CHAT_SEND, params,
+      [this](const jsonrpc::ChatResult& result) {
+          // Success callback
+          SPDLOG_INFO("Chat response received: {}", result.reply);
+          state_.ClearAwaitingResponse();
+          state_.WriteToChatHistory("assistant", result.reply);
+          AddLogEntryWithNotification(LogEntryType::RESPONSE, result.reply);
+      },
+      [this](int code, const std::string& error) {
+          // Error callback
+          SPDLOG_ERROR("Chat error: [{}] {}", code, error);
+          state_.ClearAwaitingResponse();
+          AddLogEntryWithNotification(LogEntryType::ERROR, 
+              fmt::format("Chat failed: [{}] {}", code, error));
+      }
+  );
 }
 
 void InputHandler::SendMCPRequest(const std::string& method, const std::string& params) {
@@ -276,12 +296,24 @@ void InputHandler::SendMCPRequest(const std::string& method, const std::string& 
   
   // Determine the correct param type based on method
   if (method == "tools/list" || method == "tools.list") {
-    // No params for tools.list
-    json = jsonrpc::JsonRpcRequestBuilder()
-        .method("tools.list")  // Normalize to dot notation
-        .id(request_id)
-        .noParams()
-        .buildJson();
+    // Use type-safe procedure for tools.list
+    SPDLOG_INFO("Sending tools.list via type-safe procedure");
+    mcp_client_->Call(jsonrpc::TOOLS_LIST, std::monostate{},
+        [this](const jsonrpc::ToolListResult& result) {
+            SPDLOG_INFO("Tools list received: {} tools", result.tools.size());
+            std::string tool_list = "Available tools:\n";
+            for (const auto& tool : result.tools) {
+                tool_list += "- " + tool + "\n";
+            }
+            AddLogEntryWithNotification(LogEntryType::SYSTEM, tool_list);
+        },
+        [this](int code, const std::string& error) {
+            SPDLOG_ERROR("Tools list error: [{}] {}", code, error);
+            AddLogEntryWithNotification(LogEntryType::ERROR, 
+                fmt::format("Failed to get tools: [{}] {}", code, error));
+        }
+    );
+    return;  // Early return since we handled it
   } else {
     // For unknown methods, log warning but still send with no params
     SPDLOG_WARN("Unknown method in SendMCPRequest: {}", method);

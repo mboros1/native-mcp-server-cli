@@ -17,6 +17,7 @@
 #include "../include/types_core.hpp"
 #include "../include/app_events.hpp"
 #include "../protocol/jsonrpc_messages.hpp"
+#include "../protocol/jsonrpc_procedures.hpp"
 #include "state_manager.hpp"
 #include "../network/mcp_client.hpp"
 // Forward declarations to avoid UI dependencies
@@ -30,6 +31,9 @@ public:
   const std::string& model()  const { return config_.model;  }
   const std::string& effort() const { return config_.reasoning_effort; }
   
+  // Notification callback for headless mode
+  using NotificationCallback = std::function<void(LogEntryType, const std::string&)>;
+  
 private:
   ChatConfig config_;  // Configuration loaded from/saved to disk
   StateManager& state_;
@@ -38,6 +42,7 @@ private:
   ConversationLogManager* log_manager_ = nullptr;
   CommMode comm_mode_ = CommMode::STANDALONE;
   MCPClient* mcp_client_ = nullptr;
+  NotificationCallback notification_callback_ = nullptr;
   int message_id_ = 0;  // Legacy - kept for compatibility
   
   // JSON-RPC 2.0 request tracking
@@ -58,6 +63,7 @@ public:
   void SetLogManager(ConversationLogManager* manager);
   void SetCommMode(CommMode mode);
   void SetMCPClient(MCPClient* client);
+  void SetNotificationCallback(NotificationCallback callback);
   
   void LoadConfig();
   void SaveConfig();

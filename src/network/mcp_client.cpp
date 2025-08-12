@@ -94,8 +94,9 @@ void MCPClient::ProcessEvents() {
 void MCPClient::HandleServerMessage(const std::string& message) {
   SPDLOG_INFO("HandleServerMessage called with: {}", message.substr(0, 200));
   
-  if (!response_callback_) {
-    SPDLOG_WARN("No response callback set, cannot process server message");
+  // Allow processing if either legacy callback or registry has handlers
+  if (!response_callback_ && registry_.GetPendingCount() == 0) {
+    SPDLOG_WARN("No response callback set and no pending registry requests");
     return;
   }
   
@@ -232,8 +233,8 @@ void MCPClient::HandleJsonRpcMessage(const dom::element& doc) {
     
     if (has_id) {
       // This is a response to our request
-      int id = doc["id"].is_int64() ? doc["id"].get_int64().value() : 
-               static_cast<int>(doc["id"].get_uint64().value());
+      int64_t id = doc["id"].is_int64() ? doc["id"].get_int64().value() : 
+                   static_cast<int64_t>(doc["id"].get_uint64().value());
       
       SPDLOG_DEBUG("Received JSON-RPC response with id: {}", id);
       
@@ -274,13 +275,21 @@ void MCPClient::HandleJsonRpcMessage(const dom::element& doc) {
   }
 }
 
-void MCPClient::HandleJsonRpcError(const dom::element& error, int id) {
+void MCPClient::HandleJsonRpcError(const dom::element& error, int64_t id) {
   int code = error["code"].is_int64() ? error["code"].get_int64().value() : 0;
   std::string message = error["message"].is_string() ? 
     std::string(error["message"].get_string().value()) : "Unknown error";
   
   SPDLOG_ERROR("JSON-RPC error (id: {}): [{}] {}", id, code, message);
   
+  // Try the registry first
+  if (registry_.HandleError(id, code, message)) {
+    // Remove from pending requests
+    pending_requests_.erase(id);
+    return;
+  }
+  
+  // Fall back to legacy callback handling
   // Debug: Print what data looks like
   if (!error["data"].is_null()) {
     if (error["data"].is_string()) {
@@ -316,12 +325,24 @@ void MCPClient::HandleJsonRpcError(const dom::element& error, int id) {
   }
 }
 
-void MCPClient::HandleJsonRpcResult(const dom::element& result, const dom::element& method_elem, int id) {
+void MCPClient::HandleJsonRpcResult(const dom::element& result, const dom::element& method_elem, int64_t id) {
   // Note: method_elem is empty for JSON-RPC responses (they don't have a method field)
   // We determine the result type by examining the structure of the result
   
   SPDLOG_DEBUG("Processing result (id: {})", id);
   
+  // Try the registry first
+  SPDLOG_INFO("Trying registry for ID: {} (pending count: {})", id, registry_.GetPendingCount());
+  if (registry_.HandleResponse(id, result)) {
+    SPDLOG_INFO("Registry handled response for ID: {}", id);
+    // Remove from pending requests
+    pending_requests_.erase(id);
+    return;
+  } else {
+    SPDLOG_INFO("Registry did not handle response for ID: {}", id);
+  }
+  
+  // Fall back to legacy parsing
   // Debug: Print what fields exist in the result
   SPDLOG_INFO("Analyzing result structure...");
   

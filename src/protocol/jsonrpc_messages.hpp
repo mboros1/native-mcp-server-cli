@@ -6,6 +6,8 @@
 #include <json_struct.h>
 #include <chrono>
 #include <variant>
+#include <random>
+#include <limits>
 
 namespace jsonrpc {
 
@@ -13,8 +15,29 @@ namespace jsonrpc {
 // JSON-RPC 2.0 Core Types
 // ============================================================================
 
-// Request ID Type (can be string, number, or null/monostate for simplicity we use int)
-using RequestId = int;
+// Request ID Type - using int64_t for better range and thread safety
+using RequestId = int64_t;
+
+// ============================================================================
+// Random ID Generation
+// ============================================================================
+
+/**
+ * @brief Generate a random 32-bit request ID
+ * 
+ * Uses thread-local random generator to avoid contention.
+ * We use 32-bit range to ensure compatibility with JSON parsers
+ * that may have issues with large 64-bit integers.
+ * IDs are in range [1, INT32_MAX] to avoid 0 and negative values.
+ */
+inline int64_t GenerateRequestId() {
+    thread_local std::random_device rd;
+    thread_local std::mt19937 gen(rd());
+    thread_local std::uniform_int_distribution<int32_t> dist(
+        1, std::numeric_limits<int32_t>::max()
+    );
+    return static_cast<int64_t>(dist(gen));
+}
 
 // Standard error codes (from spec)
 enum class ErrorCode : int {
@@ -57,7 +80,7 @@ struct JsonRpcRequest;
 // Generic JSON-RPC Response (for parsing, without specific types)
 struct JsonRpcResponse {
     std::string jsonrpc = "2.0";
-    int id = 0;
+    int64_t id = 0;
     // Note: result and error deliberately omitted for parsing envelope only
     
     JS_OBJ(jsonrpc, id);
@@ -109,9 +132,9 @@ struct TransactionBeginParams {
 
 // Cancel/interrupt request params
 struct CancelParams {
-    std::optional<int> requestId;  // ID of request to cancel, null = cancel current
+    std::optional<int64_t> request_id;  // ID of request to cancel, null = cancel current
     
-    JS_OBJ(requestId);
+    JS_OBJ(request_id);
 };
 
 // Retry request params
@@ -123,9 +146,12 @@ struct RetryParams {
     JS_OBJ(originalMessage, model, reasoning_effort);
 };
 
-// Sync request params (empty for now)
+// Sync request params
 struct SyncParams {
-    // Empty for now, but could add options later
+    std::optional<int64_t> since_timestamp;  // Get messages since this timestamp
+    std::optional<int> limit;  // Maximum number of messages
+    
+    JS_OBJ(since_timestamp, limit);
 };
 
 // Reload request params
@@ -138,7 +164,7 @@ struct ReloadParams {
 // Generic JSON-RPC Request - for parsing/serialization
 struct JsonRpcRequest {
     std::string jsonrpc = "2.0";
-    std::optional<int> id;  // No id = notification
+    std::optional<int64_t> id;  // No id = notification
     std::string method;
     // Note: params deliberately omitted from this struct
     // We'll handle it separately based on method
@@ -150,7 +176,7 @@ struct JsonRpcRequest {
 template<typename ParamsType>
 struct JsonRpcRequestWithParams {
     std::string jsonrpc = "2.0";
-    std::optional<int> id;
+    std::optional<int64_t> id;
     std::string method;
     std::optional<ParamsType> params;
     
@@ -206,7 +232,7 @@ struct ErrorInfo {
 template<typename ResultType>
 struct JsonRpcResponseWithResult {
     std::string jsonrpc = "2.0";
-    int id = 0;
+    int64_t id = 0;
     std::optional<ResultType> result;
     
     JS_OBJ(jsonrpc, id, result);
@@ -215,10 +241,18 @@ struct JsonRpcResponseWithResult {
 // Template for serializing error responses
 struct JsonRpcErrorResponse {
     std::string jsonrpc = "2.0";
-    int id = 0;
+    int64_t id = 0;
     ErrorInfo error;
     
     JS_OBJ(jsonrpc, id, error);
+};
+
+// Cancel result
+struct CancelResult {
+    bool success;
+    bool was_running;
+    
+    JS_OBJ(success, was_running);
 };
 
 // Simple response for operations that just return success/fail
@@ -247,7 +281,7 @@ struct ToolCalledParams {
     std::string tool_name;
     std::optional<std::string> arguments;  // JSON string
     int64_t timestamp;
-    std::optional<int> request_id;  // ID of the original request that triggered this tool call
+    std::optional<int64_t> request_id;  // ID of the original request that triggered this tool call
     
     JS_OBJ(tool_name, arguments, timestamp, request_id);
 };
@@ -258,9 +292,19 @@ struct ToolResultParams {
     std::string preview;
     int total_items;
     int64_t timestamp;
-    std::optional<int> request_id;  // ID of the original request that triggered this tool
+    std::optional<int64_t> request_id;  // ID of the original request that triggered this tool
     
     JS_OBJ(tool_name, preview, total_items, timestamp, request_id);
+};
+
+// Tool execution result
+struct ToolExecuteResult {
+    bool success;
+    std::optional<std::string> output;
+    std::optional<std::string> error;
+    std::optional<int> execution_time_ms;
+    
+    JS_OBJ(success, output, error, execution_time_ms);
 };
 
 // stream.chunk notification
@@ -286,9 +330,8 @@ struct StreamEndParams {
 
 class JsonRpcRequestBuilder {
 private:
-    static int next_id_;
     std::string method_;
-    std::optional<int> id_;
+    std::optional<int64_t> id_;
     std::optional<std::string> params_json_;
     
 public:
@@ -300,15 +343,15 @@ public:
         return *this;
     }
     
-    // Set custom ID
-    JsonRpcRequestBuilder& id(int i) {
+    // Set custom ID (for testing or special cases)
+    JsonRpcRequestBuilder& id(int64_t i) {
         id_ = i;
         return *this;
     }
     
-    // Auto-generate ID
+    // Auto-generate random ID
     JsonRpcRequestBuilder& withId() {
-        id_ = ++next_id_;
+        id_ = GenerateRequestId();
         return *this;
     }
     
@@ -321,17 +364,23 @@ public:
     // Set params from a struct - serialize it properly
     template<typename T>
     JsonRpcRequestBuilder& params(const T& p) {
-        // Create a temporary request with params to serialize properly
-        JsonRpcRequestWithParams<T> req;
-        req.jsonrpc = "2.0";
-        req.id = id_;
-        req.method = method_;
-        req.params = p;
-        
-        // Extract just the params part from the serialized JSON
-        std::string full_json = toCompactJson(req);
-        params_json_ = full_json;  // Store for later extraction
-        return *this;
+        // Special handling for std::monostate (no params)
+        if constexpr (std::is_same_v<T, std::monostate>) {
+            params_json_ = std::nullopt;
+            return *this;
+        } else {
+            // Create a temporary request with params to serialize properly
+            JsonRpcRequestWithParams<T> req;
+            req.jsonrpc = "2.0";
+            req.id = id_;
+            req.method = method_;
+            req.params = p;
+            
+            // Extract just the params part from the serialized JSON
+            std::string full_json = toCompactJson(req);
+            params_json_ = full_json;  // Store for later extraction
+            return *this;
+        }
     }
     
     // No params
@@ -440,9 +489,9 @@ public:
             .build();
     }
     
-    static JsonRpcRequest makeCancel(std::optional<int> targetId = std::nullopt) {
+    static JsonRpcRequest makeCancel(std::optional<int64_t> targetId = std::nullopt) {
         CancelParams p;
-        p.requestId = targetId;
+        p.request_id = targetId;
         
         return JsonRpcRequestBuilder()
             .method("request.cancel")
@@ -452,16 +501,13 @@ public:
     }
 };
 
-// Initialize static member
-inline int JsonRpcRequestBuilder::next_id_ = 0;
-
 // ============================================================================
 // Response Builder Class
 // ============================================================================
 
 class JsonRpcResponseBuilder {
 private:
-    int id_ = 0;
+    int64_t id_ = 0;
     std::optional<std::string> result_json_;
     std::optional<ErrorInfo> error_;
     
@@ -469,7 +515,7 @@ public:
     JsonRpcResponseBuilder() = default;
     
     // Set the ID (must match request)
-    JsonRpcResponseBuilder& id(int i) {
+    JsonRpcResponseBuilder& id(int64_t i) {
         id_ = i;
         return *this;
     }

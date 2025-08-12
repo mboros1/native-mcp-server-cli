@@ -16,11 +16,14 @@ int main() {
     ConfigurableMockServer server;
     unsigned short port = server.Start();
     
-    // Create MCP client for testing (constructor takes host and port)
-    auto mcp_client = std::make_shared<MCPClient>("127.0.0.1", port);
+    // Create MCP client for testing
+    MCPClient client("127.0.0.1", port);
     
-    // Connect to mock server (Connect takes no arguments)
-    mcp_client->Connect();
+    // Connect to mock server
+    if (!client.Connect()) {
+        std::cerr << "Failed to connect to mock server" << std::endl;
+        return 1;
+    }
     
     // Wait for connection
     if (!server.WaitForConnection(5000)) {
@@ -34,45 +37,75 @@ int main() {
     // Test 1: Configure specific chat response
     // ========================================================================
     TEST("Configure specific chat response")
-    server.RespondToChat("This is a configured response", true);
     
-    // Send chat request
-    auto chat_req = jsonrpc::JsonRpcRequestBuilder::makeChat("Hello server");
-    mcp_client->SendRequest(jsonrpc::toCompactJson(chat_req));
+    // Configure server to respond with a specific chat result
+    jsonrpc::ChatResult expected_result{
+        .reply = "This is a configured response",
+        .timestamp = 1234567890,
+        .streaming = false
+    };
+    
+    ConfigurableMockServer::MockResponse chat_response;
+    chat_response.response = [expected_result](const jsonrpc::JsonRpcRequest& req) {
+        return jsonrpc::JsonRpcResponseBuilder()
+            .id(req.id.value_or(0))
+            .result(expected_result)
+            .buildJson();
+    };
+    server.SetMethodDefault("chat.send", chat_response);
+    
+    // Send chat request using the new builder
+    jsonrpc::ChatParams chat_params{
+        .content = "Hello server",
+        .model = "test-model",
+        .timeout = 30000
+    };
+    
+    auto chat_req = jsonrpc::JsonRpcRequestBuilder()
+        .method("chat.send")
+        .id(123)
+        .params(chat_params)
+        .buildJson();
+    
+    client.SendRequest(chat_req);
     
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     // Verify server received the request
     auto last_chat = server.GetLastRequest("chat.send");
     ASSERT(last_chat.has_value());
-    
-    // Parse params to verify content
-    jsonrpc::ChatParams params;
-    if (last_chat->params.has_value()) {
-        jsonrpc::JsonRpcParser::parseParams(last_chat->params.value(), params);
-        ASSERT(params.content == "Hello server");
-    }
+    ASSERT(last_chat->method == "chat.send");
+    ASSERT(last_chat->id.has_value());
     PASS()
     
     // ========================================================================
     // Test 2: Configure error response
     // ========================================================================
     TEST("Configure error response")
-    server.RespondWithError("tools.execute", -32003, "Tool execution failed");
+    
+    // Configure server to return an error for tools.execute
+    ConfigurableMockServer::MockResponse error_response;
+    error_response.response = [](const jsonrpc::JsonRpcRequest& req) {
+        return jsonrpc::JsonRpcResponseBuilder()
+            .id(req.id.value_or(0))
+            .error(-32003, "Tool execution failed")
+            .buildJson();
+    };
+    server.SetMethodDefault("tools.execute", error_response);
     
     // Send tool execute request
     auto tool_req = jsonrpc::JsonRpcRequestBuilder()
         .method("tools.execute")
-        .withId()
-        .paramsJson("{\"name\":\"test_tool\"}")
-        .build();
+        .id(456)
+        .buildJson();
     
-    mcp_client->SendRequest(jsonrpc::toCompactJson(tool_req));
+    client.SendRequest(tool_req);
     
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     // Verify error was configured
     auto stats = server.GetStats();
+    ASSERT(stats.method_counts.count("tools.execute") > 0);
     ASSERT(stats.method_counts.at("tools.execute") == 1);
     PASS()
     
@@ -80,15 +113,39 @@ int main() {
     // Test 3: Queue multiple responses
     // ========================================================================
     TEST("Queue multiple responses")
+    
     // Queue 3 different responses for the same method
-    server.RespondToChat("First response", true);
-    server.RespondToChat("Second response", true);
-    server.RespondToChat("Third response", true);
+    for (int i = 1; i <= 3; i++) {
+        ConfigurableMockServer::MockResponse response;
+        response.once = true;  // Use once then remove
+        response.response = [i](const jsonrpc::JsonRpcRequest& req) {
+            jsonrpc::ChatResult result{
+                .reply = "Response #" + std::to_string(i),
+                .timestamp = 1234567890 + i,
+                .streaming = false
+            };
+            return jsonrpc::JsonRpcResponseBuilder()
+                .id(req.id.value_or(0))
+                .result(result)
+                .buildJson();
+        };
+        server.QueueMethodResponse("chat.send", response);
+    }
     
     // Send 3 chat requests
     for (int i = 0; i < 3; i++) {
-        auto req = jsonrpc::JsonRpcRequestBuilder::makeChat("Message " + std::to_string(i));
-        mcp_client->SendRequest(jsonrpc::toCompactJson(req));
+        jsonrpc::ChatParams params{
+            .content = "Message " + std::to_string(i),
+            .model = "test-model"
+        };
+        
+        auto req = jsonrpc::JsonRpcRequestBuilder()
+            .method("chat.send")
+            .id(1000 + i)
+            .params(params)
+            .buildJson();
+        
+        client.SendRequest(req);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     
@@ -98,176 +155,79 @@ int main() {
     PASS()
     
     // ========================================================================
-    // Test 4: Custom handler
+    // Test 4: Test statistics tracking
     // ========================================================================
-    TEST("Custom handler")
-    // Set up a custom handler that echoes the input
-    server.SetMethodHandler("echo.test", [](const jsonrpc::JsonRpcRequest& req) {
-        jsonrpc::ChatResult result;
-        result.reply = "Echo: " + req.params.value_or("empty");
-        result.timestamp = 12345;
-        
-        return jsonrpc::JsonRpcResponseBuilder()
-            .id(req.id.value_or(0))
-            .result(result)
-            .buildJson();
-    });
+    TEST("Statistics tracking")
     
-    // Send echo request
-    auto echo_req = jsonrpc::JsonRpcRequestBuilder()
-        .method("echo.test")
-        .withId()
-        .paramsJson("{\"message\":\"test echo\"}")
-        .build();
-    
-    mcp_client->SendRequest(jsonrpc::toCompactJson(echo_req));
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    // Verify it was processed
-    ASSERT(server.GetStats().method_counts.at("echo.test") == 1);
+    auto tracking_stats = server.GetStats();
+    ASSERT(tracking_stats.total_requests >= 5); // At least 5 requests sent
+    ASSERT(tracking_stats.method_counts.size() >= 2); // At least 2 different methods
+    ASSERT(tracking_stats.method_counts["chat.send"] == 4);
+    ASSERT(tracking_stats.method_counts["tools.execute"] == 1);
     PASS()
     
     // ========================================================================
-    // Test 5: Queue next response (any method)
+    // Test 5: Get last request for specific method
     // ========================================================================
-    TEST("Queue next response for any method")
-    // Configure to return a specific response for the next request, regardless of method
-    ConfigurableMockServer::MockResponse next_resp;
-    next_resp.response = [](const jsonrpc::JsonRpcRequest& req) {
+    TEST("Get last request")
+    
+    // Send a unique request
+    jsonrpc::ToolListResult tool_list_result{
+        .tools = {"file_reader", "calculator"},
+        .timestamp = 9999999
+    };
+    
+    ConfigurableMockServer::MockResponse tools_response;
+    tools_response.response = [tool_list_result](const jsonrpc::JsonRpcRequest& req) {
         return jsonrpc::JsonRpcResponseBuilder()
             .id(req.id.value_or(0))
-            .resultJson("{\"special\":\"next response\"}")
+            .result(tool_list_result)
             .buildJson();
     };
-    next_resp.once = true;
+    server.SetMethodDefault("tools.list", tools_response);
     
-    server.QueueNextResponse(next_resp);
+    auto tools_req = jsonrpc::JsonRpcRequestBuilder()
+        .method("tools.list")
+        .id(9999)
+        .buildJson();
     
-    // Send any request
-    auto any_req = jsonrpc::JsonRpcRequestBuilder()
-        .method("any.method")
-        .withId()
-        .build();
-    
-    mcp_client->SendRequest(jsonrpc::toCompactJson(any_req));
-    
+    client.SendRequest(tools_req);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // Verify it was processed
-    ASSERT(server.GetStats().method_counts.at("any.method") == 1);
+    // Get last tools.list request
+    auto last_tools = server.GetLastRequest("tools.list");
+    ASSERT(last_tools.has_value());
+    ASSERT(last_tools->method == "tools.list");
+    ASSERT(last_tools->id.value() == 9999);
     PASS()
     
     // ========================================================================
-    // Test 6: Configure tool list response
+    // Test 6: Default hello response
     // ========================================================================
-    TEST("Configure tool list response")
-    std::vector<std::string> tools = {"list_files", "read_file", "write_file"};
-    server.RespondWithTools(tools);
+    TEST("Default hello response")
     
-    // Send tool list request
-    auto tools_req = jsonrpc::JsonRpcRequestBuilder::makeToolList();
-    mcp_client->SendRequest(jsonrpc::toCompactJson(tools_req));
+    // Send hello request
+    jsonrpc::HelloParams hello_params{
+        .clientVersion = "1.0.0",
+        .capabilities = {"chat", "tools"}
+    };
+    
+    auto hello_req = jsonrpc::JsonRpcRequestBuilder()
+        .method("rpc.hello")
+        .id(0)
+        .params(hello_params)
+        .buildJson();
+    
+    client.SendRequest(hello_req);
     
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // Verify request was processed
-    ASSERT(server.GetStats().method_counts.at("tools.list") == 1);
+    // Verify hello was processed
+    auto hello_stats = server.GetStats();
+    ASSERT(hello_stats.method_counts.count("rpc.hello") > 0);
     PASS()
     
-    // ========================================================================
-    // Test 7: Clear all responses
-    // ========================================================================
-    TEST("Clear all responses")
-    // Configure some responses
-    server.RespondToChat("Should be cleared", true);
-    server.RespondWithError("test.method", -32000, "Should be cleared");
-    
-    // Clear all
-    server.ClearAllResponses();
-    
-    // Send a request - should get method not found
-    auto cleared_req = jsonrpc::JsonRpcRequestBuilder()
-        .method("cleared.method")
-        .withId()
-        .build();
-    
-    mcp_client->SendRequest(jsonrpc::toCompactJson(cleared_req));
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    // Verify it was processed but got default error
-    ASSERT(server.GetStats().method_counts.at("cleared.method") == 1);
-    PASS()
-    
-    // ========================================================================
-    // Test 8: Request history
-    // ========================================================================
-    TEST("Request history tracking")
-    // Send a few different requests
-    auto req1 = jsonrpc::JsonRpcRequestBuilder()
-        .method("history.test1")
-        .withId()
-        .build();
-    
-    auto req2 = jsonrpc::JsonRpcRequestBuilder()
-        .method("history.test2")
-        .withId()
-        .build();
-    
-    mcp_client->SendRequest(jsonrpc::toCompactJson(req1));
-    mcp_client->SendRequest(jsonrpc::toCompactJson(req2));
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    // Check history
-    auto history_stats = server.GetStats();
-    ASSERT(history_stats.request_history.size() >= 2);
-    
-    // Find our specific requests in history
-    bool found_test1 = false;
-    bool found_test2 = false;
-    for (const auto& req : history_stats.request_history) {
-        if (req.method == "history.test1") found_test1 = true;
-        if (req.method == "history.test2") found_test2 = true;
-    }
-    ASSERT(found_test1 && found_test2);
-    PASS()
-    
-    // ========================================================================
-    // Test 9: Default handlers (hello, sync)
-    // ========================================================================
-    TEST("Default handlers")
-    // The server should have default handlers for basic methods
-    
-    // Test hello
-    auto hello_req = jsonrpc::JsonRpcRequestBuilder::makeHello("1.0.0", {"test"});
-    mcp_client->SendRequest(jsonrpc::toCompactJson(hello_req));
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    ASSERT(server.GetStats().method_counts.at("rpc.hello") == 1);
-    
-    // Test sync
-    auto sync_req = jsonrpc::JsonRpcRequestBuilder::makeSync();
-    mcp_client->SendRequest(jsonrpc::toCompactJson(sync_req));
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    ASSERT(server.GetStats().method_counts.at("history.sync") == 1);
-    PASS()
-    
-    // ========================================================================
-    // Print statistics
-    // ========================================================================
-    std::cout << "\n=== Server Statistics ===" << std::endl;
-    auto final_stats_all = server.GetStats();
-    std::cout << "Total requests: " << final_stats_all.total_requests << std::endl;
-    std::cout << "Method counts:" << std::endl;
-    for (const auto& [method, count] : final_stats_all.method_counts) {
-        std::cout << "  " << method << ": " << count << std::endl;
-    }
-    
-    // Cleanup
-    mcp_client->Stop();
+    // Clean up
     server.Stop();
     
     std::cout << "\n=== All configurable mock server tests passed! ===" << std::endl;

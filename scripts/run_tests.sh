@@ -48,18 +48,32 @@ run_test() {
 
 # Build all tests first
 echo "Building tests..."
-# Note: test-tool-events temporarily disabled - needs JSON-RPC 2.0 migration
-make -s test-persist test-state test-input test-events test-jsonrpc-builder test-configurable-mock || exit 1
+# Build core tests
+make -s bin/test-persist bin/test-state bin/test-input bin/test-events || exit 1
+
+# Build JSON-RPC tests (now all fixed!)
+make -s bin/test-jsonrpc-builder bin/test-configurable-mock bin/test-tool-events || exit 1
+
+# Build new JSON-RPC integration tests
+make -s bin/test-mcp-client-jsonrpc bin/test-jsonrpc-procedures bin/test-headless-jsonrpc || exit 1
 echo ""
 
 # Run each test from bin directory (inside src/)
+# Core tests
 run_test "Chat Persistence" "bin/test-persist"
 run_test "State Manager" "bin/test-state"
 run_test "Input Handler" "bin/test-input"
 run_test "Event System" "bin/test-events"
-# run_test "Tool Events" "bin/test-tool-events"  # Temporarily disabled - needs JSON-RPC 2.0 migration
+
+# JSON-RPC infrastructure tests
 run_test "JSON-RPC Builder" "bin/test-jsonrpc-builder"
 run_test "Configurable Mock Server" "bin/test-configurable-mock"
+run_test "Tool Events" "bin/test-tool-events"
+
+# JSON-RPC integration tests
+run_test "MCP Client JSON-RPC" "bin/test-mcp-client-jsonrpc"
+run_test "JSON-RPC Procedures" "bin/test-jsonrpc-procedures"
+run_test "Headless JSON-RPC Integration" "bin/test-headless-jsonrpc"
 
 # Summary
 echo ""

@@ -49,6 +49,11 @@ bool HeadlessApplication::Initialize(const std::string& config_path) {
     // Initialize components
     input_handler_ = std::make_unique<InputHandler>(state_, config_.tools);
     
+    // Set up notification callback for InputHandler
+    input_handler_->SetNotificationCallback([this](LogEntryType type, const std::string& content) {
+        NotifyMessage(type, content);
+    });
+    
     // Load existing chat history
     state_.LoadChatHistoryOnStartup();
     
@@ -149,14 +154,33 @@ HeadlessApplication::CommandResult HeadlessApplication::ExecuteCommand(
     // Set up temporary callback to capture response
     auto original_callback = on_message_;
     on_message_ = [&](LogEntryType type, const std::string& content) {
-        std::lock_guard<std::mutex> lock(response_mutex);
-        result.response = content;
-        result.response_type = type;
-        result.success = (type != LogEntryType::ERROR);
-        response_received = true;
-        response_cv.notify_one();
+        // For commands, wait for actual results not intermediate status messages
+        bool is_final_response = false;
         
-        // Also call original callback if set
+        if (type == LogEntryType::RESPONSE || type == LogEntryType::ERROR) {
+            // Always final for RESPONSE or ERROR
+            is_final_response = true;
+        } else if (type == LogEntryType::SYSTEM) {
+            // For SYSTEM messages, check if it's a final result
+            // Skip status messages like "[Awaiting response...]" or "Requesting..."
+            if (content.find("[Awaiting") == std::string::npos &&
+                content.find("Requesting") == std::string::npos &&
+                content.find("Sending") == std::string::npos) {
+                // This looks like actual content, not a status message
+                is_final_response = true;
+            }
+        }
+        
+        if (is_final_response) {
+            std::lock_guard<std::mutex> lock(response_mutex);
+            result.response = content;
+            result.response_type = type;
+            result.success = (type != LogEntryType::ERROR);
+            response_received = true;
+            response_cv.notify_one();
+        }
+        
+        // Always call original callback if set
         if (original_callback) {
             original_callback(type, content);
         }

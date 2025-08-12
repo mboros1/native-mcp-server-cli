@@ -130,6 +130,12 @@ $(BIN_DIR)/test-jsonrpc-client-full: libheadless.a ../tests/test_jsonrpc_client_
 $(BIN_DIR)/test-mcp-client-jsonrpc: libheadless.a ../tests/test_mcp_client_jsonrpc.cpp | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_mcp_client_jsonrpc.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
 
+$(BIN_DIR)/test-jsonrpc-procedures: libheadless.a ../tests/test_jsonrpc_procedures.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_procedures.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+
+$(BIN_DIR)/test-headless-jsonrpc: libheadless.a ../tests/test_headless_jsonrpc.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_headless_jsonrpc.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+
 # Run all unit tests
 # Note: test-tool-events temporarily removed - needs JSON-RPC 2.0 migration
 test-all: $(BIN_DIR)/test-persist $(BIN_DIR)/test-state $(BIN_DIR)/test-events $(BIN_DIR)/test-input $(BIN_DIR)/test-jsonrpc-builder $(BIN_DIR)/test-configurable-mock
