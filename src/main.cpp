@@ -70,6 +70,22 @@ class Application;
 // ============================================================================
 class Application {
 private:
+  // Log entry rendering configuration
+  struct LogEntryStyle {
+    std::string label;
+    int prefix_width;
+    Color label_color;
+    Color content_color;
+  };
+  
+  static inline const std::map<LogEntryType, LogEntryStyle> log_styles_ = {
+    {LogEntryType::USER,     {"You: ",      24, Colors::kCyan,     Colors::kGreen}},
+    {LogEntryType::SYSTEM,   {"System: ",   27, Colors::kPurple,   Colors::kDimGreen}},
+    {LogEntryType::RESPONSE, {"Assistant: ", 30, Colors::kPink,     Colors::kGray}},
+    {LogEntryType::ERROR,    {"Error: ",    26, Colors::kHotPink,  Colors::kHotPink}},
+    {LogEntryType::BLOCKED,  {"Blocked: ",  28, Colors::kPurple,   Colors::kPurple}}
+  };
+  
   Config config_;
   StateManager state_;
   std::unique_ptr<UIRenderer> renderer_;
@@ -90,6 +106,27 @@ private:
   
   // Timeout monitoring
   StateManager::TimeoutState last_timeout_state_ = StateManager::TimeoutState::NORMAL;
+  
+  // Helper method to render a log entry
+  Element RenderLogEntry(const LogEntry& entry, const char* time_str) {
+    auto it = log_styles_.find(entry.type);
+    if (it == log_styles_.end()) {
+      // Fallback for unknown types
+      return text("Unknown entry type");
+    }
+    
+    const auto& style = it->second;
+    int terminal_width = Terminal::Size().dimx;
+    int content_width = terminal_width - style.prefix_width;
+    
+    return hbox({
+      text("[") | color(Colors::kGray),
+      text(time_str) | color(Colors::kGray),
+      text("] ") | color(Colors::kGray),
+      text(style.label) | bold | color(style.label_color),
+      paragraph(entry.content) | color(style.content_color) | size(WIDTH, LESS_THAN, content_width)
+    });
+  }
 
 public:
   Application() : screen_(ScreenInteractive::Fullscreen()) {
@@ -112,6 +149,12 @@ public:
     // Set screen reference for immediate UI updates
     log_manager_.SetScreen(&screen_);
     
+    // Set up notification callback to trigger UI refresh when async responses arrive
+    input_handler_->SetNotificationCallback([this](LogEntryType, const std::string&) {
+      // Trigger UI refresh when new log entries arrive
+      log_manager_.OnNewMessage();
+    });
+    
     // Create conversation log component using Renderer
     auto event_log_renderer = Renderer([this] {
       Elements log_elements;
@@ -126,77 +169,8 @@ public:
         char time_str[20];
         std::strftime(time_str, sizeof(time_str), "%H:%M:%S", std::localtime(&time_t));
         
-        // Get terminal width and calculate content width
-        int terminal_width = Terminal::Size().dimx;
-        
-        switch (entry.type) {
-          case LogEntryType::USER: {
-            // "[HH:MM:SS] You: " = 1 + 8 + 2 + 5 = 16 chars + 3 scroll bar + 5 gutter = 24
-            int prefix_width = 24;
-            int content_width = terminal_width - prefix_width;
-            line = hbox({
-              text("[") | color(Colors::kGray),
-              text(time_str) | color(Colors::kGray),
-              text("] ") | color(Colors::kGray),
-              text("You: ") | bold | color(Colors::kCyan),
-              paragraph(entry.content) | color(Colors::kGreen) | size(WIDTH, LESS_THAN, content_width)
-            });
-            break;
-          }
-          case LogEntryType::SYSTEM: {
-            // "[HH:MM:SS] System: " = 1 + 8 + 2 + 8 = 19 chars + 3 scroll bar + 5 gutter = 27
-            int prefix_width = 27;
-            int content_width = terminal_width - prefix_width;
-            line = hbox({
-              text("[") | color(Colors::kGray),
-              text(time_str) | color(Colors::kGray),
-              text("] ") | color(Colors::kGray),
-              text("System: ") | bold | color(Colors::kPurple),
-              paragraph(entry.content) | color(Colors::kDimGreen) | size(WIDTH, LESS_THAN, content_width)
-            });
-            break;
-          }
-          case LogEntryType::RESPONSE: {
-            // "[HH:MM:SS] Assistant: " = 1 + 8 + 2 + 11 = 22 chars + 3 scroll bar + 5 gutter = 30
-            int prefix_width = 30;
-            int content_width = terminal_width - prefix_width;
-            line = hbox({
-              text("[") | color(Colors::kGray),
-              text(time_str) | color(Colors::kGray),
-              text("] ") | color(Colors::kGray),
-              text("Assistant: ") | bold | color(Colors::kPink),
-              paragraph(entry.content) | color(Colors::kGray) | size(WIDTH, LESS_THAN, content_width)
-            });
-            break;
-          }
-          case LogEntryType::ERROR: {
-            // "[HH:MM:SS] Error: " = 1 + 8 + 2 + 7 = 18 chars + 3 scroll bar + 5 gutter = 26
-            int prefix_width = 26;
-            int content_width = terminal_width - prefix_width;
-            line = hbox({
-              text("[") | color(Colors::kGray),
-              text(time_str) | color(Colors::kGray),
-              text("] ") | color(Colors::kGray),
-              text("Error: ") | bold | color(Colors::kHotPink),
-              paragraph(entry.content) | color(Colors::kHotPink) | size(WIDTH, LESS_THAN, content_width)
-            });
-            break;
-          }
-          case LogEntryType::BLOCKED: {
-            // "[HH:MM:SS] Blocked: " = 1 + 8 + 2 + 9 = 20 chars + 3 scroll bar + 5 gutter = 28
-            int prefix_width = 28;
-            int content_width = terminal_width - prefix_width;
-            line = hbox({
-              text("[") | color(Colors::kGray),
-              text(time_str) | color(Colors::kGray),
-              text("] ") | color(Colors::kGray),
-              text("Blocked: ") | bold | color(Colors::kPurple),
-              paragraph(entry.content) | color(Colors::kPurple) | size(WIDTH, LESS_THAN, content_width)
-            });
-            break;
-          }
-        }
-        
+        // Use our new helper method to render the log entry
+        line = RenderLogEntry(entry, time_str);
         log_elements.push_back(line);
       }
       

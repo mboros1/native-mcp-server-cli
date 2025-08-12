@@ -136,17 +136,32 @@ $(BIN_DIR)/test-jsonrpc-procedures: libheadless.a ../tests/test_jsonrpc_procedur
 $(BIN_DIR)/test-headless-jsonrpc: libheadless.a ../tests/test_headless_jsonrpc.cpp | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_headless_jsonrpc.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
 
+$(BIN_DIR)/test-jsonrpc-integration: libheadless.a ../tests/test_jsonrpc_integration.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_integration.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+
+# Headless CLI
+$(BIN_DIR)/headless-cli: libheadless.a headless_cli.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) headless_cli.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+
 # Run all unit tests
 # Note: test-tool-events temporarily removed - needs JSON-RPC 2.0 migration
 test-all: $(BIN_DIR)/test-persist $(BIN_DIR)/test-state $(BIN_DIR)/test-events $(BIN_DIR)/test-input $(BIN_DIR)/test-jsonrpc-builder $(BIN_DIR)/test-configurable-mock
 	@../scripts/run_tests.sh
 
 # Build everything
-all: $(BIN_DIR)/demo $(BIN_DIR)/test-headless $(BIN_DIR)/simple-test
+all: $(BIN_DIR)/demo $(BIN_DIR)/test-headless $(BIN_DIR)/simple-test $(BIN_DIR)/headless-cli
 
 # Create bin directory
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
+
+# Run headless CLI with automatic server management
+run-headless: $(BIN_DIR)/headless-cli
+	@../scripts/run_headless_cli.sh
+
+# Generate compile_commands.json for VSCode
+compile_commands:
+	cd .. && make -C src clean && make -C src all -n > make_output.txt 2>&1 && node generate_compile_commands.js
 
 # Clean build artifacts
 clean:

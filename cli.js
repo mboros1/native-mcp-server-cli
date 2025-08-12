@@ -5,7 +5,7 @@ import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import fs from 'fs';
 import path from 'path';
-import { startServer, stopServer } from './server/mcp-bridge-server.js';
+import { startServer, stopServer } from './server/mcp-bridge-server-jsonrpc.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const NATIVE_BINARY = join(__dirname, 'src', 'demo');

@@ -73,7 +73,6 @@ public:
   void SendInterrupt();
   void SendRetryRequest();
   void SendChatMessage(const std::string& message);
-  void SendMCPRequest(const std::string& method, const std::string& params);
   void SendToolCall(const std::string& toolName, const std::string& args);
   
   void ProcessCommand(const std::string& command);

@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# Simple wrapper to run the headless CLI with server management
+# Usage: ./headless [options]
+
+# Get script directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Run the headless CLI launcher
+exec "$SCRIPT_DIR/scripts/run_headless_cli.sh" "$@"

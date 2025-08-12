@@ -100,7 +100,7 @@ void InputHandler::AddLogEntryWithNotification(LogEntryType type, const std::str
   
   // Notify UI if available
   if (log_manager_) {
-    // UI mode notification
+    // UI mode notification - TUI will handle refresh
   }
   
   // Notify headless callback if set
@@ -291,47 +291,6 @@ void InputHandler::SendChatMessage(const std::string& message) {
   );
 }
 
-void InputHandler::SendMCPRequest(const std::string& method, const std::string&) {
-  if (comm_mode_ != CommMode::IPC || !mcp_client_) return;
-  
-  int request_id = ++next_request_id_;
-  std::string json;
-  
-  // Determine the correct param type based on method
-  if (method == "tools/list" || method == "tools.list") {
-    // Use type-safe procedure for tools.list
-    SPDLOG_INFO("Sending tools.list via type-safe procedure");
-    mcp_client_->Call(jsonrpc::TOOLS_LIST, std::monostate{},
-        [this](const jsonrpc::ToolListResult& result) {
-            SPDLOG_INFO("Tools list received: {} tools", result.tools.size());
-            std::string tool_list = "Available tools:\n";
-            for (const auto& tool : result.tools) {
-                tool_list += "- " + tool + "\n";
-            }
-            AddLogEntryWithNotification(LogEntryType::SYSTEM, tool_list);
-        },
-        [this](int code, const std::string& error) {
-            SPDLOG_ERROR("Tools list error: [{}] {}", code, error);
-            AddLogEntryWithNotification(LogEntryType::ERROR, 
-                fmt::format("Failed to get tools: [{}] {}", code, error));
-        }
-    );
-    return;  // Early return since we handled it
-  } else {
-    // For unknown methods, log warning but still send with no params
-    SPDLOG_WARN("Unknown method in SendMCPRequest: {}", method);
-    json = jsonrpc::JsonRpcRequestBuilder()
-        .method(method)
-        .id(request_id)
-        .noParams()
-        .buildJson();
-  }
-  
-  pending_requests_[request_id] = method;
-  
-  SPDLOG_INFO("Sending JSON-RPC MCP request: {}", json);
-  mcp_client_->SendRequest(json);
-}
 
 void InputHandler::SendToolCall(const std::string& toolName, const std::string& args) {
   if (comm_mode_ != CommMode::IPC || !mcp_client_) return;
@@ -507,8 +466,23 @@ void InputHandler::ProcessCommand(const std::string& command) {
           SPDLOG_ERROR("MCP server not connected");
           AddLogEntryWithNotification(LogEntryType::ERROR, "Cannot list tools: MCP server not connected");
         } else {
-          SendMCPRequest("tools/list", "{}");
-          AddLogEntryWithNotification(LogEntryType::SYSTEM, "Requesting tool list...");
+          // Use type-safe procedure directly
+          SPDLOG_INFO("Requesting tools list");
+          mcp_client_->Call(jsonrpc::TOOLS_LIST, std::monostate{},
+              [this](const jsonrpc::ToolListResult& result) {
+                  SPDLOG_INFO("Tools list received: {} tools", result.tools.size());
+                  std::string tool_list = "Available tools:\n";
+                  for (const auto& tool : result.tools) {
+                      tool_list += "- " + tool + "\n";
+                  }
+                  AddLogEntryWithNotification(LogEntryType::SYSTEM, tool_list);
+              },
+              [this](int code, const std::string& error) {
+                  SPDLOG_ERROR("Tools list error: [{}] {}", code, error);
+                  AddLogEntryWithNotification(LogEntryType::ERROR, 
+                      fmt::format("Failed to get tools: [{}] {}", code, error));
+              }
+          );
         }
       } else {
         AddLogEntryWithNotification(LogEntryType::SYSTEM, "No tools available in standalone mode");
