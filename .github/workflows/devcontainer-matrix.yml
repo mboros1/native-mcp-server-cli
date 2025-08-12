@@ -42,9 +42,9 @@ jobs:
       - name: Test Dev Container - ${{ matrix.name }}
         uses: devcontainers/ci@v0.3
         with:
-          imageName: mcp-matrix-${{ matrix.os }}-${{ matrix.config }}
-          cacheFrom: mcp-matrix-${{ matrix.os }}-${{ matrix.config }}
+          imageName: devcontainer-matrix-test
           push: never
+          cacheFrom: ''
           env: |
             DEBUG_ENABLED=${{ github.event.inputs.debug_enabled || 'false' }}
           runCmd: |
@@ -106,8 +106,9 @@ jobs:
       - name: Simulate Codespaces environment
         uses: devcontainers/ci@v0.3
         with:
-          imageName: mcp-codespaces-test
+          imageName: devcontainer-codespaces-test
           push: never
+          cacheFrom: ''
           env: |
             CODESPACES=true
             GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN=app.github.dev

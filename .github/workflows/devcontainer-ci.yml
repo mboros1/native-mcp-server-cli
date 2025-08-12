@@ -34,9 +34,9 @@ jobs:
       - name: Build Dev Container
         uses: devcontainers/ci@v0.3
         with:
-          imageName: mcp-server-devcontainer
-          cacheFrom: mcp-server-devcontainer
+          imageName: devcontainer-ci
           push: never
+          cacheFrom: ''
           runCmd: |
             # Show environment
             echo "=== Environment ==="
@@ -128,9 +128,9 @@ jobs:
       - name: Run integration tests
         uses: devcontainers/ci@v0.3
         with:
-          imageName: mcp-server-integration
-          cacheFrom: mcp-server-integration
+          imageName: devcontainer-integration
           push: never
+          cacheFrom: ''
           runCmd: |
             # Install dependencies
             npm install

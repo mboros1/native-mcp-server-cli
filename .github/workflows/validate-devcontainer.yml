@@ -82,8 +82,9 @@ jobs:
       - name: Measure build time
         uses: devcontainers/ci@v0.3
         with:
-          imageName: mcp-server-perf-test
+          imageName: devcontainer-perf-test
           push: never
+          cacheFrom: ''
           runCmd: |
             START_TIME=$(date +%s)
             

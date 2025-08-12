@@ -34,26 +34,26 @@ ninja
 sudo ninja install
 sudo ldconfig
 
+# Create required directories first
+echo "📁 Setting up directories..."
+mkdir -p .data
+mkdir -p .logs
+mkdir -p .config
+
 # Install Node.js dependencies
 echo "📦 Installing Node.js dependencies..."
-cd /workspace
 npm install
 
 # Build the C++ project
 echo "🔨 Building C++ project..."
-cd /workspace/src
+cd src
 make clean
 make all
-
-# Create required directories
-echo "📁 Setting up directories..."
-mkdir -p /workspace/.data
-mkdir -p /workspace/.logs
-mkdir -p /workspace/.config
 
 # Generate compile_commands.json for IntelliSense
 echo "🔧 Generating compile_commands.json..."
 make compile_commands || true
+cd ..
 
 echo "✅ Devcontainer setup complete!"
 echo ""
