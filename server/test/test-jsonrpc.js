@@ -12,7 +12,8 @@ import { setupTcpJsonRpc, migrateLegacyMessage } from '../lib/jsonrpc/TcpIntegra
 // Test helpers
 function createTestClient(port) {
     return new Promise((resolve, reject) => {
-        const client = net.createConnection({ port }, () => {
+        // Force IPv4 to avoid IPv6 connection issues in CI
+        const client = net.createConnection({ port, host: '127.0.0.1' }, () => {
             console.log('✓ Connected to test server');
             resolve(client);
         });
