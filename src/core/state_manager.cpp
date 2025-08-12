@@ -270,6 +270,12 @@ void StateManager::WriteToChatHistory(const std::string& role, const std::string
   // Blocking duplicate messages should happen at the SendChatMessage level,
   // not here. This function should always write when called.
   
+  // Skip writing to file if using mocked history
+  if (use_mocked_history_) {
+    SPDLOG_DEBUG("Using mocked history, skipping file write");
+    return;
+  }
+  
   // Calculate token count
   size_t tokens = tokenizer_.count_tokens(content);
   
@@ -350,7 +356,45 @@ void StateManager::RotateChatHistoryFile() {
   }
 }
 
+void StateManager::UseMockedChatHistory(const std::vector<ChatHistoryEntry>& entries) {
+  use_mocked_history_ = true;
+  
+  // Clear existing history
+  event_log_.clear();
+  total_context_tokens_ = 0;
+  
+  // Load the mocked entries
+  for (const auto& entry : entries) {
+    // Convert role to LogEntryType
+    LogEntryType type = LogEntryType::USER;
+    if (entry.role == "assistant") {
+      type = LogEntryType::RESPONSE;  // Use RESPONSE instead of ASSISTANT
+    } else if (entry.role == "system") {
+      type = LogEntryType::SYSTEM;
+    }
+    
+    // Add to event log
+    LogEntry log_entry;
+    log_entry.type = type;
+    log_entry.content = entry.content;
+    log_entry.timestamp = std::chrono::system_clock::now();  // Use system_clock instead of steady_clock
+    event_log_.push_back(log_entry);  // Directly push to event_log_
+    
+    // Update token count
+    total_context_tokens_ += entry.token_cnt;
+  }
+  
+  SPDLOG_INFO("Loaded {} mocked chat history entries with {} total tokens", 
+              entries.size(), total_context_tokens_.load());
+}
+
 void StateManager::LoadChatHistoryOnStartup() {
+  // Skip loading from file if using mocked history
+  if (use_mocked_history_) {
+    SPDLOG_INFO("Using mocked chat history, skipping file load");
+    return;
+  }
+  
   const std::string chat_history_file = ".data/chat-history.json";
   
   // Check if file exists

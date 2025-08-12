@@ -14,6 +14,10 @@ HeadlessApplication::~HeadlessApplication() {
     Stop();
 }
 
+void HeadlessApplication::UseMockedChatHistory(const std::vector<ChatHistoryEntry>& entries) {
+    state_.UseMockedChatHistory(entries);
+}
+
 bool HeadlessApplication::Initialize(const std::string& config_path) {
     SPDLOG_INFO("Initializing headless application with config: {}", config_path);
     

@@ -33,14 +33,29 @@ run_test() {
     TOTAL=$((TOTAL + 1))
     echo -n "Running $test_name... "
     
-    if $test_exec > /tmp/test_output_$$.txt 2>&1; then
+    # Run test and capture exit code
+    $test_exec > /tmp/test_output_$$.txt 2>&1
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}PASS${NC}"
         PASSED_TESTS+=("$test_name")
     else
-        echo -e "${RED}FAIL${NC}"
+        # Check if it was a segfault
+        if [ $exit_code -eq 139 ]; then
+            echo -e "${RED}FAIL (Segmentation fault)${NC}"
+        elif [ $exit_code -eq 134 ]; then
+            echo -e "${RED}FAIL (Assertion failed)${NC}"
+        else
+            echo -e "${RED}FAIL (exit code: $exit_code)${NC}"
+        fi
         FAILED_TESTS+=("$test_name")
         # Store the output for later
-        FAILED_OUTPUT+=("$(cat /tmp/test_output_$$.txt)")
+        if [ -f /tmp/test_output_$$.txt ]; then
+            FAILED_OUTPUT+=("$(cat /tmp/test_output_$$.txt)")
+        else
+            FAILED_OUTPUT+=("(No output captured - test may have crashed)")
+        fi
     fi
     
     rm -f /tmp/test_output_$$.txt

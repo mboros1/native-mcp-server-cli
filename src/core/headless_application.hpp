@@ -79,6 +79,12 @@ public:
     bool Initialize(const std::string& config_path);
     
     /**
+     * Use mocked chat history instead of loading from file
+     * Must be called before Initialize()
+     */
+    void UseMockedChatHistory(const std::vector<ChatHistoryEntry>& entries);
+    
+    /**
      * Connect to the MCP server
      */
     bool Connect(const std::string& host = "127.0.0.1", int port = 4000);

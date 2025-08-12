@@ -402,6 +402,12 @@ public:
   void LoadChatHistoryOnStartup();
   
   /**
+   * @brief Use mocked chat history instead of loading from file
+   * @param entries Vector of chat history entries to use
+   */
+  void UseMockedChatHistory(const std::vector<ChatHistoryEntry>& entries);
+  
+  /**
    * @brief Get list of available chat history files
    * @return Vector of pairs (filename, first message preview)
    */
@@ -515,4 +521,7 @@ private:
   
   // Configuration
   ChatConfig config_;
+  
+  // Test mode flag
+  bool use_mocked_history_ = false;
 };

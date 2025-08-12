@@ -68,6 +68,10 @@ void test_headless_chat_workflow() {
     // Create and initialize HeadlessApplication
     HeadlessApplication app;
     
+    // Use empty mocked history for clean test state
+    std::vector<ChatHistoryEntry> empty_history;
+    app.UseMockedChatHistory(empty_history);
+    
     // Initialize with test config
     std::string config_path = FindTestConfigPath();
     if (!app.Initialize(config_path)) {
@@ -208,6 +212,10 @@ void test_headless_tool_execution() {
     // Create HeadlessApplication
     HeadlessApplication app;
     
+    // Use empty mocked history for clean test state
+    std::vector<ChatHistoryEntry> empty_history;
+    app.UseMockedChatHistory(empty_history);
+    
     // Initialize with test config
     std::string config_path = FindTestConfigPath();
     if (!app.Initialize(config_path)) {
@@ -278,6 +286,10 @@ void test_headless_error_handling() {
     
     // Create HeadlessApplication
     HeadlessApplication app;
+    
+    // Use empty mocked history for clean test state
+    std::vector<ChatHistoryEntry> empty_history;
+    app.UseMockedChatHistory(empty_history);
     
     // Initialize with test config
     std::string config_path = FindTestConfigPath();
@@ -369,6 +381,10 @@ void test_headless_state_management() {
     // Create HeadlessApplication
     HeadlessApplication app;
     
+    // Use empty mocked history for clean test state
+    std::vector<ChatHistoryEntry> empty_history;
+    app.UseMockedChatHistory(empty_history);
+    
     // Initialize with test config
     std::string config_path = FindTestConfigPath();
     if (!app.Initialize(config_path)) {
@@ -440,6 +456,139 @@ void test_headless_state_management() {
     server.Stop();
 }
 
+void test_headless_with_no_history() {
+    std::cout << "\n=== Testing HeadlessApplication with No Chat History ===" << std::endl;
+    
+    // Start mock server
+    ConfigurableMockServer server;
+    int port = server.Start();
+    
+    // Configure mock response
+    ConfigurableMockServer::MockResponse chat_response;
+    chat_response.response = [](const jsonrpc::JsonRpcRequest& req) {
+        jsonrpc::ChatResult result{
+            .reply = "Test response with no history",
+            .timestamp = static_cast<int64_t>(std::time(nullptr)),
+            .streaming = false
+        };
+        return jsonrpc::JsonRpcResponseBuilder()
+            .id(req.id.value_or(0))
+            .result(result)
+            .buildJson();
+    };
+    server.SetMethodDefault("chat.send", chat_response);
+    
+    // Create HeadlessApplication
+    HeadlessApplication app;
+    
+    // Explicitly use empty history (no chat history)
+    std::vector<ChatHistoryEntry> no_history;
+    app.UseMockedChatHistory(no_history);
+    
+    // Initialize with test config
+    std::string config_path = FindTestConfigPath();
+    if (!app.Initialize(config_path)) {
+        std::cerr << "❌ Failed to initialize HeadlessApplication" << std::endl;
+        return;
+    }
+    
+    // Connect and start
+    if (!app.Connect("127.0.0.1", port)) {
+        std::cerr << "❌ Failed to connect to mock server" << std::endl;
+        return;
+    }
+    
+    app.Start();
+    
+    // Verify no history
+    auto log = app.GetConversationLog();
+    if (!log.empty()) {
+        std::cerr << "❌ Expected empty conversation log but found " << log.size() << " entries" << std::endl;
+        return;
+    }
+    
+    // Send a message to verify it works
+    auto result = app.SendChatMessage("Test message", 5s);
+    if (!result.success) {
+        std::cerr << "❌ Failed to send message with no history" << std::endl;
+        return;
+    }
+    
+    std::cout << "✅ No history test passed!" << std::endl;
+    
+    app.Stop();
+    server.Stop();
+}
+
+void test_headless_with_mocked_history() {
+    std::cout << "\n=== Testing HeadlessApplication with Mocked Chat History ===" << std::endl;
+    
+    // Start mock server
+    ConfigurableMockServer server;
+    int port = server.Start();
+    
+    // Configure mock response
+    ConfigurableMockServer::MockResponse chat_response;
+    chat_response.response = [](const jsonrpc::JsonRpcRequest& req) {
+        jsonrpc::ChatResult result{
+            .reply = "Response with mocked history context",
+            .timestamp = static_cast<int64_t>(std::time(nullptr)),
+            .streaming = false
+        };
+        return jsonrpc::JsonRpcResponseBuilder()
+            .id(req.id.value_or(0))
+            .result(result)
+            .buildJson();
+    };
+    server.SetMethodDefault("chat.send", chat_response);
+    
+    // Create HeadlessApplication
+    HeadlessApplication app;
+    
+    // Create controlled mocked history
+    std::vector<ChatHistoryEntry> mocked_history = {
+        {"user", "Previous user message 1", 5},
+        {"assistant", "Previous assistant response 1", 7},
+        {"user", "Previous user message 2", 6},
+        {"assistant", "Previous assistant response 2", 8}
+    };
+    app.UseMockedChatHistory(mocked_history);
+    
+    // Initialize with test config
+    std::string config_path = FindTestConfigPath();
+    if (!app.Initialize(config_path)) {
+        std::cerr << "❌ Failed to initialize HeadlessApplication" << std::endl;
+        return;
+    }
+    
+    // Connect and start
+    if (!app.Connect("127.0.0.1", port)) {
+        std::cerr << "❌ Failed to connect to mock server" << std::endl;
+        return;
+    }
+    
+    app.Start();
+    
+    // Verify mocked history was loaded
+    auto log = app.GetConversationLog();
+    if (log.size() != 4) {
+        std::cerr << "❌ Expected 4 history entries but found " << log.size() << std::endl;
+        return;
+    }
+    
+    // Verify token count from mocked history
+    size_t tokens = app.GetTokenCount();
+    if (tokens != 26) { // 5 + 7 + 6 + 8 = 26
+        std::cerr << "❌ Expected 26 tokens from mocked history but got " << tokens << std::endl;
+        return;
+    }
+    
+    std::cout << "✅ Mocked history test passed!" << std::endl;
+    
+    app.Stop();
+    server.Stop();
+}
+
 int main() {
     spdlog::set_level(spdlog::level::info);
     std::cout << "=== Testing JSON-RPC with HeadlessApplication ===" << std::endl;
@@ -449,6 +598,8 @@ int main() {
         test_headless_tool_execution();
         test_headless_error_handling();
         test_headless_state_management();
+        test_headless_with_no_history();
+        test_headless_with_mocked_history();
         
         std::cout << "\n=== All HeadlessApplication JSON-RPC Tests Passed! ===" << std::endl;
     } catch (const std::exception& e) {
