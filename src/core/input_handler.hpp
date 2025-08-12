@@ -43,7 +43,6 @@ private:
   CommMode comm_mode_ = CommMode::STANDALONE;
   MCPClient* mcp_client_ = nullptr;
   NotificationCallback notification_callback_ = nullptr;
-  int message_id_ = 0;  // Legacy - kept for compatibility
   
   // JSON-RPC 2.0 request tracking
   int next_request_id_ = 0;  // Sequential ID generator

@@ -102,7 +102,7 @@ public:
     }
     
     // Convert app event back to FTXUI event (if needed)
-    void* ToFramework(const Event& event) override {
+    void* ToFramework(const Event&) override {
         // This would require creating FTXUI events, which is more complex
         // For now, we mainly need FromFramework for input handling
         // This could be implemented if bidirectional conversion is needed

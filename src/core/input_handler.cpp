@@ -120,7 +120,10 @@ void InputHandler::LoadConfig() {
                              std::istreambuf_iterator<char>());
         
         JS::ParseContext context(json_str);
-        context.parseTo(config_);
+        auto result = context.parseTo(config_);
+        if (result != JS::Error::NoError) {
+            SPDLOG_ERROR("Failed to parse config JSON");
+        }
         
         SPDLOG_INFO("Loaded configuration from {}: model={}, effort={}", 
                     config_path.string(), config_.model, config_.reasoning_effort);
@@ -288,7 +291,7 @@ void InputHandler::SendChatMessage(const std::string& message) {
   );
 }
 
-void InputHandler::SendMCPRequest(const std::string& method, const std::string& params) {
+void InputHandler::SendMCPRequest(const std::string& method, const std::string&) {
   if (comm_mode_ != CommMode::IPC || !mcp_client_) return;
   
   int request_id = ++next_request_id_;

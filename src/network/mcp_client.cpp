@@ -325,7 +325,7 @@ void MCPClient::HandleJsonRpcError(const dom::element& error, int64_t id) {
   }
 }
 
-void MCPClient::HandleJsonRpcResult(const dom::element& result, const dom::element& method_elem, int64_t id) {
+void MCPClient::HandleJsonRpcResult(const dom::element& result, const dom::element&, int64_t id) {
   // Note: method_elem is empty for JSON-RPC responses (they don't have a method field)
   // We determine the result type by examining the structure of the result
   

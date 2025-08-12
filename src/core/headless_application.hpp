@@ -59,8 +59,13 @@ private:
     ConnectionCallback on_connection_change_;
     
     // Testing helpers
-    bool auto_process_events_ = true;
     std::chrono::milliseconds command_timeout_{30000};
+    
+    // Message tracking for WaitForNextMessage
+    std::mutex message_mutex_;
+    std::condition_variable message_cv_;
+    LogEntryType last_message_type_;
+    bool message_received_ = false;
     
 public:
     HeadlessApplication();
@@ -192,6 +197,13 @@ public:
      */
     bool WaitForState(std::function<bool()> predicate, 
                       std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+    
+    /**
+     * Wait for the next message of a specific type with timeout
+     * Returns true if message was received, false on timeout
+     */
+    bool WaitForNextMessage(LogEntryType expected_type,
+                           std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
     
     /**
      * Process all pending events (for testing)

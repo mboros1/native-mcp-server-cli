@@ -77,7 +77,6 @@ void test_headless_chat_workflow() {
     
     // Set up event callbacks
     std::vector<std::string> received_messages;
-    std::atomic<bool> got_response{false};
     std::string last_response;
     
     app.OnMessage([&](LogEntryType type, const std::string& content) {
@@ -86,7 +85,6 @@ void test_headless_chat_workflow() {
         received_messages.push_back(content);
         if (type == LogEntryType::RESPONSE) {
             last_response = content;
-            got_response = true;
         }
     });
     
@@ -125,9 +123,9 @@ void test_headless_chat_workflow() {
     std::cout << "✅ Chat message sent successfully" << std::endl;
     std::cout << "Response: " << result.response << std::endl;
     
-    // Verify the response was received
-    if (!got_response) {
-        std::cerr << "❌ Response callback was not triggered" << std::endl;
+    // Wait for the response callback to be triggered
+    if (!app.WaitForNextMessage(LogEntryType::RESPONSE, 1s)) {
+        std::cerr << "❌ Response callback was not triggered within timeout" << std::endl;
         return;
     }
     

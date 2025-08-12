@@ -337,7 +337,33 @@ void HeadlessApplication::SetupCallbacks() {
     // Similar to what Application does but without UI updates
 }
 
+bool HeadlessApplication::WaitForNextMessage(LogEntryType expected_type,
+                                            std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(message_mutex_);
+    
+    // Clear previous state
+    message_received_ = false;
+    
+    // Wait for the next message of the expected type
+    bool result = message_cv_.wait_for(lock, timeout, [this, expected_type]() {
+        return message_received_ && last_message_type_ == expected_type;
+    });
+    
+    // Reset for next call
+    message_received_ = false;
+    
+    return result;
+}
+
 void HeadlessApplication::NotifyMessage(LogEntryType type, const std::string& content) {
+    // Track for WaitForNextMessage
+    {
+        std::lock_guard<std::mutex> lock(message_mutex_);
+        last_message_type_ = type;
+        message_received_ = true;
+    }
+    message_cv_.notify_all();
+    
     if (on_message_) {
         on_message_(type, content);
     }

@@ -254,7 +254,7 @@ private:
      */
     void do_read() {
         asio::async_read_until(socket_, read_buffer_, '\n',
-            [this](std::error_code ec, std::size_t length) {
+            [this](std::error_code ec, std::size_t) {
                 if (!ec) {
                     std::istream stream(&read_buffer_);
                     std::string line;
