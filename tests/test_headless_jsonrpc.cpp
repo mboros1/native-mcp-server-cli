@@ -12,8 +12,34 @@
 #include <atomic>
 #include <cassert>
 #include <spdlog/spdlog.h>
+#include <filesystem>
 
 using namespace std::chrono_literals;
+
+// Helper function to find the test config file from various locations
+std::string FindTestConfigPath() {
+    // Try multiple paths to support running from different directories
+    std::vector<std::string> paths = {
+        "tests/test_config.json",         // From project root
+        "../tests/test_config.json",      // From src directory
+        "./test_config.json",              // From tests directory
+        "test_config.json"                 // Current directory
+    };
+    
+    for (const auto& path : paths) {
+        if (std::filesystem::exists(path)) {
+            SPDLOG_INFO("Found test config at: {}", path);
+            return path;
+        }
+    }
+    
+    // If not found, return the most likely path with an error message
+    std::cerr << "❌ Could not find test_config.json in any of the expected locations:" << std::endl;
+    for (const auto& path : paths) {
+        std::cerr << "  - " << path << std::endl;
+    }
+    return "tests/test_config.json";  // Default to project root path
+}
 
 void test_headless_chat_workflow() {
     std::cout << "\n=== Testing Chat Workflow with HeadlessApplication ===" << std::endl;
@@ -43,8 +69,9 @@ void test_headless_chat_workflow() {
     HeadlessApplication app;
     
     // Initialize with test config
-    if (!app.Initialize("../tests/test_config.json")) {
-        std::cerr << "❌ Failed to initialize HeadlessApplication" << std::endl;
+    std::string config_path = FindTestConfigPath();
+    if (!app.Initialize(config_path)) {
+        std::cerr << "❌ Failed to initialize HeadlessApplication with config: " << config_path << std::endl;
         return;
     }
     
@@ -184,8 +211,9 @@ void test_headless_tool_execution() {
     HeadlessApplication app;
     
     // Initialize with test config
-    if (!app.Initialize("../tests/test_config.json")) {
-        std::cerr << "❌ Failed to initialize HeadlessApplication" << std::endl;
+    std::string config_path = FindTestConfigPath();
+    if (!app.Initialize(config_path)) {
+        std::cerr << "❌ Failed to initialize HeadlessApplication with config: " << config_path << std::endl;
         return;
     }
     
@@ -254,8 +282,9 @@ void test_headless_error_handling() {
     HeadlessApplication app;
     
     // Initialize with test config
-    if (!app.Initialize("../tests/test_config.json")) {
-        std::cerr << "❌ Failed to initialize HeadlessApplication" << std::endl;
+    std::string config_path = FindTestConfigPath();
+    if (!app.Initialize(config_path)) {
+        std::cerr << "❌ Failed to initialize HeadlessApplication with config: " << config_path << std::endl;
         return;
     }
     
@@ -294,7 +323,7 @@ void test_headless_error_handling() {
     ConfigurableMockServer::MockResponse no_response;
     no_response.response = [](const jsonrpc::JsonRpcRequest&) {
         SPDLOG_INFO("Mock server delaying response to simulate timeout");
-        std::this_thread::sleep_for(10s);  // Delay longer than timeout
+        std::this_thread::sleep_for(std::chrono::seconds(2));  // Delay longer than 1s timeout
         return "";
     };
     server.SetMethodDefault("chat.send", no_response);
@@ -343,8 +372,9 @@ void test_headless_state_management() {
     HeadlessApplication app;
     
     // Initialize with test config
-    if (!app.Initialize("../tests/test_config.json")) {
-        std::cerr << "❌ Failed to initialize HeadlessApplication" << std::endl;
+    std::string config_path = FindTestConfigPath();
+    if (!app.Initialize(config_path)) {
+        std::cerr << "❌ Failed to initialize HeadlessApplication with config: " << config_path << std::endl;
         return;
     }
     
