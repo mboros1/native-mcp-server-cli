@@ -1,0 +1,60 @@
+{
+    "name": "Native MCP Server CLI (Custom)",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-vscode.cmake-tools",
+                "vadimcn.vscode-lldb",
+                "ms-vscode.makefile-tools",
+                "GitHub.copilot"
+            ],
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "terminal.integrated.profiles.linux": {
+                    "bash": {
+                        "path": "/bin/bash",
+                        "args": ["-l"]
+                    }
+                },
+                "C_Cpp.default.configurationProvider": "ms-vscode.makefile-tools",
+                "files.associations": {
+                    "*.hpp": "cpp",
+                    "*.cpp": "cpp"
+                }
+            }
+        }
+    },
+    
+    "postCreateCommand": "npm install && cd src && make all",
+    
+    "forwardPorts": [3000, 4000],
+    "portsAttributes": {
+        "3000": {
+            "label": "Node.js Server",
+            "onAutoForward": "silent",
+            "protocol": "http"
+        },
+        "4000": {
+            "label": "TCP Bridge",
+            "onAutoForward": "silent"
+        }
+    },
+    
+    "remoteUser": "vscode",
+    
+    "features": {
+        "ghcr.io/devcontainers/features/github-cli:1": {}
+    },
+    
+    "runArgs": [
+        "--cap-add=SYS_PTRACE",
+        "--security-opt",
+        "seccomp=unconfined"
+    ]
+}

@@ -1,0 +1,146 @@
+name: Dev Container Matrix Tests
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Enable debug logging'
+        required: false
+        default: 'false'
+
+jobs:
+  test-matrix:
+    runs-on: ${{ matrix.os }}
+    name: Test on ${{ matrix.os }} - ${{ matrix.config }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04]
+        config: [devcontainer.json, devcontainer-dockerfile.json]
+        include:
+          - config: devcontainer.json
+            name: "Pre-built Image"
+          - config: devcontainer-dockerfile.json
+            name: "Custom Dockerfile"
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup test configuration
+        run: |
+          # Use the specified devcontainer configuration
+          if [ "${{ matrix.config }}" != "devcontainer.json" ]; then
+            mv .devcontainer/devcontainer.json .devcontainer/devcontainer.json.bak
+            cp .devcontainer/${{ matrix.config }} .devcontainer/devcontainer.json
+          fi
+
+      - name: Test Dev Container - ${{ matrix.name }}
+        uses: devcontainers/ci@v0.3
+        with:
+          imageName: mcp-matrix-${{ matrix.os }}-${{ matrix.config }}
+          cacheFrom: mcp-matrix-${{ matrix.os }}-${{ matrix.config }}
+          push: never
+          env: |
+            DEBUG_ENABLED=${{ github.event.inputs.debug_enabled || 'false' }}
+          runCmd: |
+            echo "=== Testing on ${{ matrix.os }} with ${{ matrix.config }} ==="
+            
+            # Enable debug if requested
+            if [ "$DEBUG_ENABLED" = "true" ]; then
+              set -x
+            fi
+            
+            # System info
+            uname -a
+            lsb_release -a || true
+            
+            # Check tools
+            gcc --version | head -1
+            node --version
+            npm --version
+            
+            # Build project
+            npm install
+            cd src
+            make clean
+            
+            # Time the build
+            START=$(date +%s)
+            make -j$(nproc) all
+            END=$(date +%s)
+            echo "Build time: $((END - START)) seconds"
+            
+            # Run tests
+            make test || TEST_RESULT=$?
+            
+            # Check critical binaries
+            for binary in demo headless-cli; do
+              if [ -f "bin/$binary" ]; then
+                echo "✅ $binary exists"
+                ./bin/$binary --help 2>/dev/null || true
+              else
+                echo "❌ $binary missing"
+                exit 1
+              fi
+            done
+            
+            # Test TUI rendering (non-interactive)
+            timeout 1 script -c "./bin/demo --help" /dev/null || true
+            
+            echo "=== Tests completed for ${{ matrix.config }} ==="
+            exit ${TEST_RESULT:-0}
+
+  test-codespaces-compat:
+    runs-on: ubuntu-latest
+    name: Codespaces Compatibility Test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Simulate Codespaces environment
+        uses: devcontainers/ci@v0.3
+        with:
+          imageName: mcp-codespaces-test
+          push: never
+          env: |
+            CODESPACES=true
+            GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN=app.github.dev
+          runCmd: |
+            echo "=== Simulating GitHub Codespaces environment ==="
+            
+            # Check if terminal supports colors
+            if [ -t 1 ]; then
+              echo "✅ Terminal supports TTY"
+              tput colors && echo "✅ Terminal supports $(tput colors) colors"
+            fi
+            
+            # Test TERM variable
+            echo "TERM=$TERM"
+            echo "COLORTERM=$COLORTERM"
+            
+            # Build project
+            npm install
+            cd src
+            make -j$(nproc) all
+            
+            # Test terminal UI capabilities
+            echo "=== Testing Terminal UI ==="
+            
+            # Create a test script that runs the TUI briefly
+            cat > test_tui.sh << 'EOF'
+            #!/bin/bash
+            timeout 2 ./bin/demo --help || true
+            echo "Terminal UI test completed"
+            EOF
+            
+            chmod +x test_tui.sh
+            script -qc "./test_tui.sh" /dev/null
+            
+            echo "=== Codespaces compatibility test completed ==="/antml:parameter>
+</invoke>

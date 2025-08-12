@@ -1,0 +1,53 @@
+{
+    "name": "Native MCP Server CLI",
+    "image": "mcr.microsoft.com/devcontainers/cpp:1-ubuntu-22.04",
+    
+    "features": {
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "20"
+        },
+        "ghcr.io/devcontainers/features/github-cli:1": {}
+    },
+    
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-vscode.cmake-tools",
+                "vadimcn.vscode-lldb",
+                "ms-vscode.makefile-tools"
+            ],
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "C_Cpp.default.configurationProvider": "ms-vscode.makefile-tools"
+            }
+        }
+    },
+    
+    "postCreateCommand": ".devcontainer/post-create.sh",
+    
+    "forwardPorts": [3000, 4000],
+    "portsAttributes": {
+        "3000": {
+            "label": "Node.js Server",
+            "onAutoForward": "silent"
+        },
+        "4000": {
+            "label": "TCP Bridge",
+            "onAutoForward": "silent"
+        }
+    },
+    
+    "remoteUser": "vscode",
+    
+    "mounts": [
+        "source=${localWorkspaceFolder}/.data,target=/workspace/.data,type=bind,consistency=cached",
+        "source=${localWorkspaceFolder}/.logs,target=/workspace/.logs,type=bind,consistency=cached"
+    ],
+    
+    "runArgs": [
+        "--cap-add=SYS_PTRACE",
+        "--security-opt",
+        "seccomp=unconfined"
+    ]
+}

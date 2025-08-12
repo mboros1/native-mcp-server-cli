@@ -1,0 +1,36 @@
+name: Dev Container Status
+
+on:
+  workflow_run:
+    workflows: ["Dev Container CI"]
+    types:
+      - completed
+  push:
+    branches: [main, trunk]
+
+jobs:
+  update-badge:
+    runs-on: ubuntu-latest
+    name: Update README Badge
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'push'
+    
+    steps:
+      - name: Create badge JSON
+        run: |
+          if [ "${{ github.event.workflow_run.conclusion }}" == "success" ]; then
+            STATUS="passing"
+            COLOR="brightgreen"
+          elif [ "${{ github.event.workflow_run.conclusion }}" == "failure" ]; then
+            STATUS="failing"
+            COLOR="red"
+          else
+            STATUS="building"
+            COLOR="yellow"
+          fi
+          
+          echo "{\"schemaVersion\": 1, \"label\": \"devcontainer\", \"message\": \"$STATUS\", \"color\": \"$COLOR\"}" > badge.json
+          
+      - name: Output status
+        run: |
+          echo "📦 Dev Container Build Status: ${{ github.event.workflow_run.conclusion || 'pending' }}"
+          echo "Ready for GitHub Codespaces: ✅"

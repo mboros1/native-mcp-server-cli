@@ -1,6 +1,8 @@
 # Native MCP CLI
 
 [![Tests](https://github.com/yourusername/native-mcp-cli/actions/workflows/test.yml/badge.svg)](https://github.com/yourusername/native-mcp-cli/actions/workflows/test.yml)
+[![Dev Container](https://github.com/yourusername/native-mcp-cli/actions/workflows/devcontainer-ci.yml/badge.svg)](https://github.com/yourusername/native-mcp-cli/actions/workflows/devcontainer-ci.yml)
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/yourusername/native-mcp-cli)
 
 A high-performance Model Context Protocol (MCP) CLI with a native C++ terminal UI.
 

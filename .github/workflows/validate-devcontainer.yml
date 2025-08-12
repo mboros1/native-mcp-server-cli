@@ -1,0 +1,106 @@
+name: Validate Dev Container
+
+on:
+  pull_request:
+    paths:
+      - '.devcontainer/**'
+  push:
+    paths:
+      - '.devcontainer/**'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    name: Validate Dev Container Configuration
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate devcontainer.json
+        run: |
+          # Check if devcontainer.json is valid JSON
+          python3 -m json.tool .devcontainer/devcontainer.json > /dev/null
+          echo "✅ devcontainer.json is valid JSON"
+          
+          # Check if Dockerfile exists if referenced
+          if grep -q '"dockerfile"' .devcontainer/devcontainer.json; then
+            test -f .devcontainer/Dockerfile
+            echo "✅ Dockerfile exists"
+          fi
+          
+          # Check if post-create script is executable
+          if [ -f .devcontainer/post-create.sh ]; then
+            test -x .devcontainer/post-create.sh
+            echo "✅ post-create.sh is executable"
+          fi
+
+      - name: Test Dockerfile build
+        if: hashFiles('.devcontainer/Dockerfile') != ''
+        run: |
+          docker build -t test-devcontainer -f .devcontainer/Dockerfile .
+          echo "✅ Dockerfile builds successfully"
+
+      - name: Check Dev Container features
+        run: |
+          # Validate that required VS Code extensions are specified
+          python3 -c "
+          import json
+          with open('.devcontainer/devcontainer.json', 'r') as f:
+              config = json.load(f)
+          
+          # Check for required extensions
+          extensions = config.get('customizations', {}).get('vscode', {}).get('extensions', [])
+          required = ['ms-vscode.cpptools']
+          
+          for ext in required:
+              if ext in extensions:
+                  print(f'✅ Required extension {ext} is configured')
+              else:
+                  print(f'❌ Missing required extension {ext}')
+                  exit(1)
+          
+          # Check for port forwarding
+          ports = config.get('forwardPorts', [])
+          if ports:
+              print(f'✅ Port forwarding configured for: {ports}')
+          
+          # Check features
+          features = config.get('features', {})
+          if features:
+              print(f'✅ Dev container features configured: {list(features.keys())}')
+          "
+
+  test-build-speed:
+    runs-on: ubuntu-latest
+    name: Test Build Performance
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Measure build time
+        uses: devcontainers/ci@v0.3
+        with:
+          imageName: mcp-server-perf-test
+          push: never
+          runCmd: |
+            START_TIME=$(date +%s)
+            
+            # Install dependencies and build
+            npm install
+            cd src
+            make -j$(nproc) all
+            
+            END_TIME=$(date +%s)
+            BUILD_TIME=$((END_TIME - START_TIME))
+            
+            echo "⏱️ Total build time: ${BUILD_TIME} seconds"
+            
+            # Fail if build takes too long (more than 5 minutes)
+            if [ $BUILD_TIME -gt 300 ]; then
+              echo "❌ Build took too long (${BUILD_TIME}s > 300s)"
+              exit 1
+            else
+              echo "✅ Build completed in acceptable time"
+            fi

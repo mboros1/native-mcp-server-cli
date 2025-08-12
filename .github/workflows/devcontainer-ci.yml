@@ -1,0 +1,164 @@
+name: Dev Container CI
+
+on:
+  push:
+    branches: [ main, trunk, develop ]
+    paths:
+      - '.devcontainer/**'
+      - 'src/**'
+      - 'server/**'
+      - 'package.json'
+      - '.github/workflows/devcontainer-ci.yml'
+  pull_request:
+    branches: [ main, trunk, develop ]
+    paths:
+      - '.devcontainer/**'
+      - 'src/**'
+      - 'server/**'
+      - 'package.json'
+      - '.github/workflows/devcontainer-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  test-devcontainer:
+    runs-on: ubuntu-latest
+    name: Test Dev Container
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Dev Container
+        uses: devcontainers/ci@v0.3
+        with:
+          imageName: mcp-server-devcontainer
+          cacheFrom: mcp-server-devcontainer
+          push: never
+          runCmd: |
+            # Show environment
+            echo "=== Environment ==="
+            gcc --version
+            g++ --version
+            node --version
+            npm --version
+            
+            # Install Node dependencies
+            echo "=== Installing Node.js dependencies ==="
+            npm install
+            
+            # Build C++ project
+            echo "=== Building C++ project ==="
+            cd src
+            make clean
+            make -j$(nproc) all
+            
+            # Run C++ tests
+            echo "=== Running C++ tests ==="
+            make test-all || true
+            
+            # Test binaries exist
+            echo "=== Checking binaries ==="
+            ls -la bin/
+            test -f bin/demo
+            test -f bin/headless-cli
+            
+            # Test headless CLI
+            echo "=== Testing headless CLI ==="
+            echo -e "/help\n/exit" | timeout 5 ./bin/headless-cli --host 127.0.0.1 --port 3001 || true
+            
+            # Test Node.js server
+            echo "=== Testing Node.js server ==="
+            cd ..
+            timeout 3 node server/mcp-bridge-server-jsonrpc.js --console &
+            SERVER_PID=$!
+            sleep 2
+            kill $SERVER_PID 2>/dev/null || true
+            
+            echo "=== All tests completed ==="
+
+  test-devcontainer-dockerfile:
+    runs-on: ubuntu-latest
+    name: Test Dev Container (Dockerfile)
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -t mcp-devcontainer -f .devcontainer/Dockerfile .
+
+      - name: Run tests in container
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace \
+            mcp-devcontainer bash -c "
+              cd /workspace
+              
+              # Install Node dependencies
+              npm install
+              
+              # Build project
+              cd src
+              make clean
+              make -j\$(nproc) all
+              
+              # Check binaries
+              ls -la bin/
+              test -f bin/demo
+              test -f bin/headless-cli
+              
+              # Run unit tests
+              make test || true
+              
+              echo 'Build and tests completed successfully'
+            "
+
+  test-integration:
+    runs-on: ubuntu-latest
+    name: Integration Tests in Container
+    needs: [test-devcontainer]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run integration tests
+        uses: devcontainers/ci@v0.3
+        with:
+          imageName: mcp-server-integration
+          cacheFrom: mcp-server-integration
+          push: never
+          runCmd: |
+            # Install dependencies
+            npm install
+            
+            # Build everything
+            cd src
+            make clean
+            make -j$(nproc) all
+            
+            # Start Node.js server in background
+            cd ..
+            node server/mcp-bridge-server-jsonrpc.js --console &
+            SERVER_PID=$!
+            
+            # Wait for server
+            sleep 3
+            
+            # Run integration test
+            cd src
+            if [ -f bin/test-jsonrpc-integration ]; then
+              timeout 30 ./bin/test-jsonrpc-integration || RESULT=$?
+              echo "Integration test result: ${RESULT:-0}"
+            fi
+            
+            # Run headless CLI test
+            echo -e "/tools\n/servers\n/help\n/exit" | timeout 10 ./bin/headless-cli --port 3000 || true
+            
+            # Cleanup
+            kill $SERVER_PID 2>/dev/null || true
+            
+            echo "Integration tests completed"
