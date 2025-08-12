@@ -34,6 +34,9 @@ ninja
 sudo ninja install
 sudo ldconfig
 
+# Return to workspace directory
+cd /workspaces/native-mcp-server-cli || cd /workspace
+
 # Create required directories first
 echo "📁 Setting up directories..."
 mkdir -p .data
