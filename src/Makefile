@@ -2,6 +2,16 @@
 CXX      ?= g++
 CXXFLAGS += -std=c++20 -Wall -Wextra -pedantic
 
+# Debug/Release build configuration
+DEBUG ?= 0
+ifeq ($(DEBUG), 1)
+    CXXFLAGS += -g -O0 -DDEBUG -fno-omit-frame-pointer
+    BIN_SUFFIX = -debug
+else
+    CXXFLAGS += -O2 -DNDEBUG
+    BIN_SUFFIX =
+endif
+
 # Output directory for binaries
 BIN_DIR = bin
 
@@ -71,77 +81,77 @@ LDFLAGS_HEADLESS  = $(SPDLOG_LIBS)
 # ---- build targets ---------------------------------------------------------
 
 # Default target - build the full UI application
-$(BIN_DIR)/demo: $(SOURCES) | $(BIN_DIR)
+$(BIN_DIR)/demo$(BIN_SUFFIX): $(SOURCES) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_UI) $(SOURCES) -o $@ $(LDFLAGS_UI)
 
 # Headless library for testing (static library)
-libheadless.a: $(HEADLESS_SOURCES)
+libheadless$(BIN_SUFFIX).a: $(HEADLESS_SOURCES)
 	$(CXX) $(CXXFLAGS_HEADLESS) -c $(HEADLESS_SOURCES)
 	ar rcs $@ *.o
 	rm -f *.o
 
 # Headless test executable
-$(BIN_DIR)/test-headless: libheadless.a $(TEST_SOURCES) | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) $(TEST_SOURCES) -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-headless$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a $(TEST_SOURCES) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) $(TEST_SOURCES) -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
 # Simple headless test executable
-$(BIN_DIR)/simple-test: libheadless.a $(SIMPLE_TEST_SOURCES) | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) $(SIMPLE_TEST_SOURCES) -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/simple-test$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a $(SIMPLE_TEST_SOURCES) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) $(SIMPLE_TEST_SOURCES) -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
 # Run headless tests
-test: $(BIN_DIR)/test-headless
-	$(BIN_DIR)/test-headless
+test: $(BIN_DIR)/test-headless$(BIN_SUFFIX)
+	$(BIN_DIR)/test-headless$(BIN_SUFFIX)
 
 # Run simple test
-test-simple: $(BIN_DIR)/simple-test
-	$(BIN_DIR)/simple-test
+test-simple: $(BIN_DIR)/simple-test$(BIN_SUFFIX)
+	$(BIN_DIR)/simple-test$(BIN_SUFFIX)
 
 # Individual unit tests
-$(BIN_DIR)/test-persist: libheadless.a $(PERSIST_TEST_SOURCES) | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) $(PERSIST_TEST_SOURCES) -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-persist$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a $(PERSIST_TEST_SOURCES) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) $(PERSIST_TEST_SOURCES) -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-state: libheadless.a ../tests/test_state_manager.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_state_manager.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-state$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_state_manager.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_state_manager.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-events: ../tests/test_events.cpp | $(BIN_DIR)
+$(BIN_DIR)/test-events$(BIN_SUFFIX): ../tests/test_events.cpp | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_events.cpp -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-input: libheadless.a ../tests/test_input_handler.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_input_handler.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-input$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_input_handler.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_input_handler.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-input-server: libheadless.a ../tests/test_input_handler_with_server.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_input_handler_with_server.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-input-server$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_input_handler_with_server.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_input_handler_with_server.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-tool-events: libheadless.a ../tests/test_tool_events.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_tool_events.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-tool-events$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_tool_events.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_tool_events.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-jsonrpc: libheadless.a ../tests/test_jsonrpc_server.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_server.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-jsonrpc$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_jsonrpc_server.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_server.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-jsonrpc-builder: ../tests/test_jsonrpc_builder.cpp | $(BIN_DIR)
+$(BIN_DIR)/test-jsonrpc-builder$(BIN_SUFFIX): ../tests/test_jsonrpc_builder.cpp | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_builder.cpp -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-configurable-mock: libheadless.a ../tests/test_configurable_mock.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_configurable_mock.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-configurable-mock$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_configurable_mock.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_configurable_mock.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-jsonrpc-client-full: libheadless.a ../tests/test_jsonrpc_client_full.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_client_full.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-jsonrpc-client-full$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_jsonrpc_client_full.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_client_full.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-mcp-client-jsonrpc: libheadless.a ../tests/test_mcp_client_jsonrpc.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_mcp_client_jsonrpc.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-mcp-client-jsonrpc$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_mcp_client_jsonrpc.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_mcp_client_jsonrpc.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-jsonrpc-procedures: libheadless.a ../tests/test_jsonrpc_procedures.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_procedures.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-jsonrpc-procedures$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_jsonrpc_procedures.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_procedures.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-headless-jsonrpc: libheadless.a ../tests/test_headless_jsonrpc.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_headless_jsonrpc.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-headless-jsonrpc$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_headless_jsonrpc.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_headless_jsonrpc.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
-$(BIN_DIR)/test-jsonrpc-integration: libheadless.a ../tests/test_jsonrpc_integration.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_integration.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/test-jsonrpc-integration$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a ../tests/test_jsonrpc_integration.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) ../tests/test_jsonrpc_integration.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
 # Headless CLI
-$(BIN_DIR)/headless-cli: libheadless.a headless_cli.cpp | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_HEADLESS) headless_cli.cpp -L. -lheadless -o $@ $(LDFLAGS_HEADLESS)
+$(BIN_DIR)/headless-cli$(BIN_SUFFIX): libheadless$(BIN_SUFFIX).a headless_cli.cpp | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS_HEADLESS) headless_cli.cpp -L. -lheadless$(BIN_SUFFIX) -o $@ $(LDFLAGS_HEADLESS)
 
 # Run all unit tests
 # Note: test-tool-events temporarily removed - needs JSON-RPC 2.0 migration
@@ -149,15 +159,19 @@ test-all: $(BIN_DIR)/test-persist $(BIN_DIR)/test-state $(BIN_DIR)/test-events $
 	@../scripts/run_tests.sh
 
 # Build everything
-all: $(BIN_DIR)/demo $(BIN_DIR)/test-headless $(BIN_DIR)/simple-test $(BIN_DIR)/headless-cli
+all: $(BIN_DIR)/demo$(BIN_SUFFIX) $(BIN_DIR)/test-headless$(BIN_SUFFIX) $(BIN_DIR)/simple-test$(BIN_SUFFIX) $(BIN_DIR)/headless-cli$(BIN_SUFFIX)
 
 # Create bin directory
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 # Run headless CLI with automatic server management
-run-headless: $(BIN_DIR)/headless-cli
+run-headless: $(BIN_DIR)/headless-cli$(BIN_SUFFIX)
 	@../scripts/run_headless_cli.sh
+
+# Run TUI in debug mode with debug server
+debug-run: debug-demo
+	@../scripts/run_debug_tui.sh
 
 # Generate compile_commands.json for VSCode
 compile_commands:
@@ -165,14 +179,24 @@ compile_commands:
 
 # Clean build artifacts
 clean:
-	rm -rf $(BIN_DIR) libheadless.a *.o
+	rm -rf $(BIN_DIR) libheadless*.a *.o
+
+# Debug build targets
+debug:
+	$(MAKE) DEBUG=1 all
+
+debug-demo:
+	$(MAKE) DEBUG=1 $(BIN_DIR)/demo-debug
+
+debug-test:
+	$(MAKE) DEBUG=1 test
 
 # Convenience targets (without bin/ prefix)
-demo: $(BIN_DIR)/demo
-test-headless: $(BIN_DIR)/test-headless
-simple-test: $(BIN_DIR)/simple-test
-test-persist: $(BIN_DIR)/test-persist
-test-state: $(BIN_DIR)/test-state
+demo: $(BIN_DIR)/demo$(BIN_SUFFIX)
+test-headless: $(BIN_DIR)/test-headless$(BIN_SUFFIX)
+simple-test: $(BIN_DIR)/simple-test$(BIN_SUFFIX)
+test-persist: $(BIN_DIR)/test-persist$(BIN_SUFFIX)
+test-state: $(BIN_DIR)/test-state$(BIN_SUFFIX)
 test-events: $(BIN_DIR)/test-events
 test-input: $(BIN_DIR)/test-input
 test-tool-events: $(BIN_DIR)/test-tool-events

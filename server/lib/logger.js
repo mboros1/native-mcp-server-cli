@@ -23,11 +23,16 @@ if (!fs.existsSync(logsDir)) {
     fs.mkdirSync(logsDir, { recursive: true });
 }
 
+// Check if console output is enabled via environment variable or command line
+const CONSOLE_OUTPUT = process.env.DEBUG_CONSOLE === 'true' || 
+                       process.argv.includes('--console') ||
+                       process.argv.includes('--debug');
+
 // Create log streams for different components
 const logStreams = {
-    server: fs.createWriteStream(path.join(logsDir, 'mcp-bridge-server.log'), { flags: 'a' }),
-    tools: fs.createWriteStream(path.join(logsDir, 'tools.log'), { flags: 'a' }),
-    general: fs.createWriteStream(path.join(logsDir, 'app.log'), { flags: 'a' })
+    server: CONSOLE_OUTPUT ? process.stdout : fs.createWriteStream(path.join(logsDir, 'mcp-bridge-server.log'), { flags: 'a' }),
+    tools: CONSOLE_OUTPUT ? process.stdout : fs.createWriteStream(path.join(logsDir, 'tools.log'), { flags: 'a' }),
+    general: CONSOLE_OUTPUT ? process.stdout : fs.createWriteStream(path.join(logsDir, 'app.log'), { flags: 'a' })
 };
 
 /**
@@ -63,15 +68,17 @@ export const log = createLogger('general');
 export function silenceConsole() {
     const noop = () => {};
     
-    // Only silence in production, not in tests
-    if (process.env.NODE_ENV !== 'test') {
-        console.log = noop;
-        console.error = noop;
-        console.warn = noop;
-        console.info = noop;
-        console.debug = noop;
+    // Don't silence if console output is enabled, in test mode, or debug mode
+    if (CONSOLE_OUTPUT || process.env.NODE_ENV === 'test') {
+        return;
     }
+    
+    console.log = noop;
+    console.error = noop;
+    console.warn = noop;
+    console.info = noop;
+    console.debug = noop;
 }
 
-// Auto-silence on import (can be overridden in tests)
+// Auto-silence on import (can be overridden in tests or debug mode)
 silenceConsole();
