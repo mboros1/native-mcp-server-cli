@@ -143,5 +143,4 @@ jobs:
             chmod +x test_tui.sh
             script -qc "./test_tui.sh" /dev/null
             
-            echo "=== Codespaces compatibility test completed ==="/antml:parameter>
-</invoke>
+            echo "=== Codespaces compatibility test completed ==="
