@@ -65,7 +65,7 @@ struct Procedure {
 inline constexpr Procedure<ChatParams, ChatResult> CHAT_SEND {
     .name = "chat.send",
     .description = "Send a message to the AI assistant",
-    .default_timeout = std::chrono::seconds(30)
+    .default_timeout = std::chrono::seconds(120)  // Increased for agent mode and complex operations
 };
 
 /**
@@ -191,6 +191,33 @@ inline constexpr Procedure<CancelParams, CancelResult> REQUEST_CANCEL {
     .name = "request.cancel",
     .description = "Cancel a pending request",
     .default_timeout = std::chrono::seconds(2)
+};
+
+/**
+ * @brief Retry the last chat message
+ */
+inline constexpr Procedure<std::monostate, ChatResult> CHAT_RETRY {
+    .name = "chat.retry",
+    .description = "Retry the last chat message",
+    .default_timeout = std::chrono::seconds(120)
+};
+
+/**
+ * @brief Clear conversation history
+ */
+inline constexpr Procedure<std::monostate, std::monostate> CHAT_CLEAR {
+    .name = "chat.clear",
+    .description = "Clear conversation history",
+    .default_timeout = std::chrono::seconds(5)
+};
+
+/**
+ * @brief Reload history from file
+ */
+inline constexpr Procedure<std::monostate, std::monostate> HISTORY_RELOAD {
+    .name = "history.reload",
+    .description = "Reload history from file",
+    .default_timeout = std::chrono::seconds(5)
 };
 
 // ============================================================================

@@ -9,6 +9,16 @@
  */
 
 import { listFiles, LIST_FILES_TOOL } from './listFiles.js';
+import { 
+  mcpReadFile, 
+  mcpWriteFile, 
+  mcpCreateDirectory, 
+  mcpListDirectory,
+  mcpMoveFile,
+  mcpSearchFiles,
+  mcpGetFileInfo,
+  MCP_FILESYSTEM_TOOLS 
+} from './mcpFilesystem.js';
 import { toolLog } from '../lib/logger.js';
 
 /**
@@ -16,12 +26,15 @@ import { toolLog } from '../lib/logger.js';
  * Maps tool name to its implementation function
  */
 const toolImplementations = {
-  list_files: listFiles
-  // Future tools will be added here:
-  // create_diff: createDiff,
-  // apply_patch: applyPatch,
-  // read_file: readFile,
-  // write_file: writeFile,
+  list_files: listFiles,
+  // MCP filesystem tools
+  mcp_read_file: mcpReadFile,
+  mcp_write_file: mcpWriteFile,
+  mcp_create_directory: mcpCreateDirectory,
+  mcp_list_directory: mcpListDirectory,
+  mcp_move_file: mcpMoveFile,
+  mcp_search_files: mcpSearchFiles,
+  mcp_get_file_info: mcpGetFileInfo
 };
 
 /**
@@ -29,8 +42,8 @@ const toolImplementations = {
  * This is what gets sent to the AI model
  */
 export const AVAILABLE_TOOLS = [
-  LIST_FILES_TOOL
-  // Future tool definitions will be added here
+  LIST_FILES_TOOL,
+  ...MCP_FILESYSTEM_TOOLS
 ];
 
 /**

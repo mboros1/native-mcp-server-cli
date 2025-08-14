@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/martinboros/git/native-mcp-server-cli"],
+      "env": {},
+      "enabled": true
+    },
+    "sqlite": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sqlite", "./data/test.db"],
+      "env": {},
+      "enabled": false
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "enabled": true,
+      "description": "GitHub API access - requires GITHUB_TOKEN env var"
+    },
+    "serper": {
+      "command": "npx",
+      "args": ["-y", "@marcopesani/mcp-server-serper"],
+      "env": {
+        "SERPER_API_KEY": "${SERPER_API_KEY}"
+      },
+      "enabled": false,
+      "description": "Web search and scraping via Serper API - requires SERPER_API_KEY env var"
+    }
+  }
+}

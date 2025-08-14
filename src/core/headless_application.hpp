@@ -59,7 +59,7 @@ private:
     ConnectionCallback on_connection_change_;
     
     // Testing helpers
-    std::chrono::milliseconds command_timeout_{30000};
+    std::chrono::milliseconds command_timeout_{120000};  // Increased for agent mode
     
     // Message tracking for WaitForNextMessage
     std::mutex message_mutex_;
@@ -105,7 +105,7 @@ public:
      * Execute a command synchronously (blocks until response or timeout)
      */
     CommandResult ExecuteCommand(const std::string& command, 
-                                 std::chrono::milliseconds timeout = std::chrono::milliseconds(30000));
+                                 std::chrono::milliseconds timeout = std::chrono::milliseconds(120000));
     
     /**
      * Execute a command asynchronously with callback

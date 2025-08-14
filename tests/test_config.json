@@ -1,9 +1,17 @@
 {
-    "ui": {
-        "welcomeMessage": "Test HeadlessApplication"
-    },
-    "settings": {
-        "maxHistorySize": 100
-    },
-    "tools": []
+  "server": {
+    "name": "MCP Bridge Test Server",
+    "version": "1.0.0",
+    "description": "Test configuration for MCP bridge server"
+  },
+  "ui": {
+    "welcomeMessage": "MCP Bridge Test CLI",
+    "inputPlaceholder": "Enter command..."
+  },
+  "settings": {
+    "maxHistorySize": 100,
+    "enableLogging": true,
+    "logLevel": "info"
+  },
+  "tools": []
 }

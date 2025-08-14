@@ -120,13 +120,31 @@ export class ApiManager {
             {
                 role: 'system',
                 content: 'You are a helpful AI assistant. You have access to the conversation history below.'
-            },
-            ...history,
-            {
-                role: 'user',
-                content
             }
         ];
+        
+        // Add history, but prevent consecutive messages from same role
+        let lastRole = 'system';
+        for (const msg of history) {
+            if (msg.role === lastRole && msg.role === 'user') {
+                // Merge consecutive user messages
+                messages[messages.length - 1].content += '\n\n' + msg.content;
+            } else {
+                messages.push(msg);
+                lastRole = msg.role;
+            }
+        }
+        
+        // Add the new user message
+        if (lastRole === 'user') {
+            // Merge with previous user message
+            messages[messages.length - 1].content += '\n\n' + content;
+        } else {
+            messages.push({
+                role: 'user',
+                content
+            });
+        }
         
         // Format request according to model
         const requestData = config.formatRequest(
@@ -137,6 +155,11 @@ export class ApiManager {
         );
         
         log(`Sending request to ${config.id}: ${content.slice(0, 50)}...`);
+        
+        // Debug log the full request in agent mode
+        if (process.env.DEBUG_AGENTS === 'true') {
+            log(`Full request to ${config.id}:`, JSON.stringify(requestData, null, 2));
+        }
         
         try {
             // Create timeout
@@ -161,25 +184,29 @@ export class ApiManager {
             // Extract response based on model format
             let responseContent;
             let toolCalls = null;
+            let finishReason = null;
             
             if (model === 'o3') {
                 // O3 format
                 const messageItem = response.data.output?.find(item => item.type === 'message');
                 responseContent = messageItem?.content?.[0]?.text || response.data.completion || '';
+                finishReason = 'stop'; // O3 doesn't have finish_reason
             } else {
                 // OpenAI/Kimi format
                 const choice = response.data.choices?.[0];
                 responseContent = choice?.message?.content || '';
                 toolCalls = choice?.message?.tool_calls || null;
+                finishReason = choice?.finish_reason || null;
             }
             
-            log(`Received response from ${config.id}: ${responseContent?.slice(0, 50) || '(tool calls)'}...`);
+            log(`Received response from ${config.id}: ${responseContent?.slice(0, 50) || '(tool calls)'}, finish_reason: ${finishReason}`);
             
             return {
                 content: responseContent,
                 model: config.id,
                 usage: response.data.usage || {},
-                toolCalls
+                toolCalls,
+                finishReason
             };
             
         } catch (err) {

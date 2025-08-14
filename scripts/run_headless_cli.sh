@@ -46,8 +46,15 @@ fi
 
 # Start the server
 echo -e "${GREEN}Starting JSON-RPC server on port $PORT...${NC}"
-node server/mcp-bridge-server-jsonrpc.js > .logs/server-headless.log 2>&1 &
-SERVER_PID=$!
+if [ "$DEBUG_CONSOLE" = "true" ]; then
+    # Run with console output for debugging
+    PORT=$PORT DEBUG_CONSOLE=true USE_AGENT_MODE="$USE_AGENT_MODE" DEBUG_AGENTS="$DEBUG_AGENTS" node server/mcp-bridge-server-jsonrpc.js &
+    SERVER_PID=$!
+else
+    # Run with file logging only
+    PORT=$PORT USE_AGENT_MODE="$USE_AGENT_MODE" DEBUG_AGENTS="$DEBUG_AGENTS" node server/mcp-bridge-server-jsonrpc.js > .logs/server-headless.log 2>&1 &
+    SERVER_PID=$!
+fi
 
 # Give server time to start
 sleep 2

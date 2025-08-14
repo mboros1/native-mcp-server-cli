@@ -14,13 +14,23 @@ import { config } from 'dotenv';
 // JSON-RPC modules
 import { JsonRpcServer } from './lib/jsonrpc/JsonRpcServer.js';
 import { registerAllProcedures } from './lib/jsonrpc/procedures.js';
+import { registerAllProceduresDynamic } from './lib/jsonrpc/procedures-dynamic.js';
 import { ApiManager } from './lib/jsonrpc/ApiManager.js';
 import { ChatHistory } from './lib/jsonrpc/ChatHistory.js';
 import { setupTcpJsonRpc, migrateLegacyMessage } from './lib/jsonrpc/TcpIntegration.js';
 import { silenceConsole, log } from './lib/logger.js';
 
+// Dynamic MCP tool loading
+import { 
+    initializeToolRouter, 
+    getToolSystemStatus 
+} from './tools/toolRouter-dynamic.js';
+
 // CRITICAL: Silence all console output to prevent FTXUI corruption
-silenceConsole();
+// Unless DEBUG_CONSOLE is set for debugging
+if (process.env.DEBUG_CONSOLE !== 'true') {
+    silenceConsole();
+}
 
 // Load environment variables
 config({ silent: true });
@@ -48,11 +58,47 @@ const chatHistory = new ChatHistory(dataDir);
 // Load initial chat history from C++ file
 chatHistory.loadFromFile();
 
-// Register all JSON-RPC procedures
-const procedures = registerAllProcedures(jsonRpcServer, {
-    apiManager,
-    chatHistory
-});
+// Initialize server with dynamic MCP support
+async function initializeServer() {
+    // Check if dynamic MCP is enabled (default: true)
+    const USE_DYNAMIC_MCP = process.env.USE_DYNAMIC_MCP !== 'false';
+    let procedures;
+    
+    if (USE_DYNAMIC_MCP) {
+        try {
+            log('Initializing dynamic MCP tools...');
+            await initializeToolRouter();
+            const status = await getToolSystemStatus();
+            log(`MCP tools initialized: ${status.totalTools} tools available`);
+            
+            // Use dynamic procedures with MCP support
+            procedures = registerAllProceduresDynamic(jsonRpcServer, {
+                apiManager,
+                chatHistory
+            });
+        } catch (err) {
+            log(`Failed to initialize MCP tools: ${err.message}`);
+            log('Falling back to static tools only');
+            
+            // Fall back to standard procedures
+            procedures = registerAllProcedures(jsonRpcServer, {
+                apiManager,
+                chatHistory
+            });
+        }
+    } else {
+        // Use standard procedures when MCP is disabled
+        procedures = registerAllProcedures(jsonRpcServer, {
+            apiManager,
+            chatHistory
+        });
+    }
+    
+    return procedures;
+}
+
+// Initialize the server (will set up procedures)
+const proceduresPromise = initializeServer();
 
 // Create enhanced TCP handler that supports both formats
 class BridgeTcpHandler {
@@ -319,9 +365,12 @@ const server = net.createServer((socket) => {
 });
 
 // Export functions for CLI integration
-export async function startServer(port = 4000) {
+export async function startServer(port = 3000) {
     // Load chat history at startup
     chatHistory.loadFromFile();
+    
+    // Wait for procedures to be initialized (including MCP tools if enabled)
+    await proceduresPromise;
     
     return new Promise((resolve, reject) => {
         server.listen(port, '127.0.0.1', () => {
@@ -359,9 +408,25 @@ export function stopServer() {
 
 // If run directly (not imported), start the server
 if (import.meta.url === `file://${process.argv[1]}`) {
-    const PORT = process.env.MCP_SERVER_PORT || 3000;
-    startServer(PORT).catch(err => {
-        console.error('Failed to start server:', err);
+    const PORT = process.env.PORT || process.env.MCP_SERVER_PORT || 3000;
+    
+    startServer(PORT).then(() => {
+        if (process.env.DEBUG_CONSOLE === 'true') {
+            console.log(`MCP Bridge Server started on port ${PORT}`);
+            console.log('Console output enabled - logs will appear here');
+        }
+    }).catch(err => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`\n❌ Error: Port ${PORT} is already in use`);
+            console.error(`\nPlease try one of the following:`);
+            console.error(`  1. Stop the process using port ${PORT}`);
+            console.error(`  2. Set a different port using the PORT environment variable:`);
+            console.error(`     PORT=3001 ${process.argv[1]}`);
+            console.error(`  3. Or use MCP_SERVER_PORT environment variable:`);
+            console.error(`     MCP_SERVER_PORT=3001 ${process.argv[1]}\n`);
+        } else {
+            console.error('Failed to start server:', err);
+        }
         process.exit(1);
     });
     

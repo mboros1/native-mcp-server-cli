@@ -1,4 +1,5 @@
 #include "input_handler.hpp"
+#include "../protocol/jsonrpc_procedures.hpp"
 
 InputHandler::InputHandler(StateManager& state, std::vector<Tool>& tools) 
   : state_(state), tools_(tools) {
@@ -180,7 +181,7 @@ void InputHandler::SendInterrupt() {
   
   // Build JSON-RPC 2.0 cancel request with designated initializers
   auto request = jsonrpc::JsonRpcRequestBuilder()
-      .method("request.cancel")
+      .method(jsonrpc::REQUEST_CANCEL.name)
       .id(++next_request_id_)
       .params(jsonrpc::CancelParams{
           .request_id = current_chat_id_ ? std::optional<int64_t>(*current_chat_id_) : std::nullopt
@@ -215,7 +216,7 @@ void InputHandler::SendRetryRequest() {
   
   // Build JSON-RPC 2.0 retry request with designated initializers
   auto request = jsonrpc::JsonRpcRequestBuilder()
-      .method("chat.retry")
+      .method(jsonrpc::CHAT_RETRY.name)
       .id(++next_request_id_)
       .params(jsonrpc::RetryParams{
           .originalMessage = original_message,
@@ -303,7 +304,7 @@ void InputHandler::SendToolCall(const std::string& toolName, const std::string& 
   }
   
   auto request = jsonrpc::JsonRpcRequestBuilder()
-      .method("tools.execute")
+      .method(jsonrpc::TOOL_EXECUTE.name)
       .id(++next_request_id_)
       .params(params)
       .build();
@@ -595,16 +596,16 @@ void InputHandler::ProcessCommand(const std::string& command) {
         state_.ResetTokenCount();
         state_.ClearEventLog();
         
-        // Build JSON-RPC 2.0 new conversation request
+        // Build JSON-RPC 2.0 clear conversation request
         auto request = jsonrpc::JsonRpcRequestBuilder()
-            .method("chat.new")
+            .method("chat.clear")
             .id(++next_request_id_)
             .build();
         
-        pending_requests_[*request.id] = "new";
+        pending_requests_[*request.id] = "clear";
         std::string json = jsonrpc::toCompactJson(request);
         mcp_client_->SendRequest(json);
-        SPDLOG_DEBUG("Sent JSON-RPC chat.new request, rotated chat history file, reset token count and cleared conversation log");
+        SPDLOG_DEBUG("Sent JSON-RPC chat.clear request, rotated chat history file, reset token count and cleared conversation log");
       } else {
         AddLogEntryWithNotification(LogEntryType::ERROR, "New conversation command requires connection to MCP server");
       }
@@ -712,8 +713,8 @@ void InputHandler::OnResponseReceived(int id) {
       SPDLOG_DEBUG("Sync response received");
     } else if (request_type == "reload" || request_type == "reload-after-load") {
       SPDLOG_DEBUG("Reload response received");
-    } else if (request_type == "new") {
-      SPDLOG_DEBUG("New conversation response received");
+    } else if (request_type == "clear") {
+      SPDLOG_DEBUG("Clear conversation response received");
     }
   } else {
     SPDLOG_WARN("Received response for unknown request ID: {}", id);
