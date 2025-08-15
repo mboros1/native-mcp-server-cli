@@ -5,15 +5,20 @@
  */
 
 // Core components
-export { AgentOrchestrator } from './core/AgentOrchestrator.js';
-export { AgentState } from './core/AgentState.js';
-export { AgentStrategy } from './core/AgentStrategy.js';
+import { AgentOrchestrator } from './core/AgentOrchestrator.js';
+import { AgentState } from './core/AgentState.js';
+import { AgentStrategy } from './core/AgentStrategy.js';
 
 // Strategies
-export { ReactAgent } from './strategies/ReactAgent.js';
+import { ReactAgent } from './strategies/ReactAgent.js';
 
 // Components
-export { TodoManager } from './components/TodoManager.js';
+import { TodoManager } from './components/TodoManager.js';
+
+// Re-export for external use
+export { AgentOrchestrator, AgentState, AgentStrategy };
+export { ReactAgent };
+export { TodoManager };
 
 // Factory function to create a configured orchestrator
 export function createAgentOrchestrator(options = {}) {

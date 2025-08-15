@@ -137,11 +137,11 @@ export function hasTool(toolName) {
  * Get tool information
  * 
  * @param {string} toolName - Name of the tool
- * @returns {Object|null} Tool information or null if not found
+ * @returns {Promise<Object|null>} Tool information or null if not found
  */
 export async function getToolInfo(toolName) {
     // Check if it's a dynamic MCP tool
-    const mcpTools = await mcpServerManager.getAllTools();
+    const mcpTools = dynamicToolDefinitions;
     const mcpTool = mcpTools.find(t => t.name === toolName);
     
     if (mcpTool) {
@@ -154,13 +154,13 @@ export async function getToolInfo(toolName) {
     }
     
     // Check static tools
-    const staticTool = STATIC_TOOLS.find(t => t.name === toolName);
-    if (staticTool) {
+    const staticToolDef = [LIST_FILES_TOOL].find(t => t.name === toolName);
+    if (staticToolDef) {
         return {
-            name: staticTool.name,
-            description: staticTool.description,
-            parameters: staticTool.parameters || {},
-            examples: staticTool.examples || [],
+            name: staticToolDef.name,
+            description: staticToolDef.description,
+            parameters: staticToolDef.parameters || {},
+            examples: staticToolDef.examples || [],
             source: 'static'
         };
     }

@@ -33,7 +33,7 @@ if (process.env.DEBUG_CONSOLE !== 'true') {
 }
 
 // Load environment variables
-config({ silent: true });
+config();
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -388,6 +388,7 @@ export async function startServer(port = 3000) {
         });
 
         server.on('error', (err) => {
+            // @ts-ignore - Node.js errors have a code property
             if (err.code === 'EADDRINUSE') {
                 log(`Port ${port} is already in use`);
             }
@@ -408,7 +409,7 @@ export function stopServer() {
 
 // If run directly (not imported), start the server
 if (import.meta.url === `file://${process.argv[1]}`) {
-    const PORT = process.env.PORT || process.env.MCP_SERVER_PORT || 3000;
+    const PORT = Number(process.env.PORT || process.env.MCP_SERVER_PORT || 3000);
     
     startServer(PORT).then(() => {
         if (process.env.DEBUG_CONSOLE === 'true') {

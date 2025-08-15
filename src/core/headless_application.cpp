@@ -1,4 +1,5 @@
 #include "headless_application.hpp"
+#include "../protocol/jsonrpc_procedures.hpp"
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <simdjson.h>
@@ -222,8 +223,11 @@ void HeadlessApplication::ExecuteCommandAsync(
 }
 
 HeadlessApplication::CommandResult HeadlessApplication::SendChatMessage(
-    const std::string& message,
-    std::chrono::milliseconds timeout) {
+    const std::string& message) {
+    
+    // Use the default timeout from the CHAT_SEND procedure
+    auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
+        jsonrpc::CHAT_SEND.default_timeout);
     
     // Chat messages are just commands without the slash
     return ExecuteCommand(message, timeout);

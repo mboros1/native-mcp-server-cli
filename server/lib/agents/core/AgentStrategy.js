@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Base Agent Strategy
  * 
@@ -25,6 +26,9 @@ export class AgentStrategy {
     
     /**
      * Main execution method - must be implemented by subclasses
+     * @param {import('../../../types').AgentState} state - Agent state
+     * @param {import('../../../types').AgentContext} context - Execution context
+     * @returns {Promise<string>} The final result/response
      */
     async execute(state, context) {
         throw new Error(`${this.name} must implement execute() method`);
@@ -59,6 +63,9 @@ export class AgentStrategy {
     
     /**
      * Post-execution hook
+     * @param {import('../../../types').AgentState} state - Agent state
+     * @param {string} result - Execution result
+     * @returns {Promise<string>} The result (passed through)
      */
     async afterExecute(state, result) {
         this.log(`Execution completed. Stats: ${JSON.stringify(state.getStats())}`);

@@ -140,7 +140,7 @@ class MCPServerManager {
      * Execute a tool on the appropriate server
      */
     async executeTool(toolName, args) {
-        const toolInfo = this.tools.get(toolName);
+        let toolInfo = this.tools.get(toolName);
         
         if (!toolInfo) {
             // Try without prefix for backward compatibility

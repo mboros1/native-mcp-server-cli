@@ -180,9 +180,9 @@ export class TcpJsonRpcHandler {
 /**
  * Create a TCP server with JSON-RPC handling
  * 
- * @param {net.Server} tcpServer - Node.js TCP server
- * @param {JsonRpcServer} jsonRpcServer - JSON-RPC server instance
- * @returns {net.Server} - Configured TCP server
+ * @param {import('net').Server} tcpServer - Node.js TCP server
+ * @param {import('./JsonRpcServer.js').JsonRpcServer} jsonRpcServer - JSON-RPC server instance
+ * @returns {import('net').Server} - Configured TCP server
  */
 export function setupTcpJsonRpc(tcpServer, jsonRpcServer) {
     // Track active connections
@@ -202,8 +202,8 @@ export function setupTcpJsonRpc(tcpServer, jsonRpcServer) {
     });
     
     // Add server methods
-    tcpServer.getConnections = () => connections;
-    tcpServer.abortClient = (clientId) => {
+    /** @type {any} */ (tcpServer).getConnections = () => connections;
+    /** @type {any} */ (tcpServer).abortClient = (clientId) => {
         const handler = connections.get(clientId);
         return handler ? handler.abort() : false;
     };

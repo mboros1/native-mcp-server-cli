@@ -1,9 +1,16 @@
+// @ts-check
 /**
  * ReAct Agent Strategy
  * 
  * Implements the ReAct (Reasoning + Acting) pattern for tool use
  * Alternates between thinking, acting (tool use), and observing results
  */
+
+/** @typedef {import('../../../types').AgentState} AgentState */
+/** @typedef {import('../../../types').AgentContext} AgentContext */
+/** @typedef {import('../../../types').ToolCall} ToolCall */
+/** @typedef {import('../../../types').ThoughtResponse} ThoughtResponse */
+/** @typedef {import('../../../types').Tool} Tool */
 
 import { AgentStrategy } from '../core/AgentStrategy.js';
 
@@ -18,10 +25,14 @@ export class ReactAgent extends AgentStrategy {
         
         this.maxToolCalls = options.maxToolCalls || 10;
         this.requireExplicitCompletion = options.requireExplicitCompletion || false;
+        this.maxRetries = options.maxRetries || 3;
     }
     
     /**
      * Main execution loop
+     * @param {AgentState} state - The agent state
+     * @param {AgentContext} context - Execution context
+     * @returns {Promise<string>} The final response
      */
     async execute(state, context) {
         const { task, model = 'kimi', tools = [], initialResponse } = context;
@@ -98,6 +109,9 @@ export class ReactAgent extends AgentStrategy {
     
     /**
      * Think phase - Call LLM to reason about the task
+     * @param {AgentState} state - Current agent state
+     * @param {AgentContext} context - Execution context
+     * @returns {Promise<ThoughtResponse>} LLM response with reasoning
      */
     async think(state, context) {
         const { model, tools } = context;
@@ -110,22 +124,72 @@ export class ReactAgent extends AgentStrategy {
         
         this.log(`Thinking... (iteration ${state.iterationCount})`);
         
-        // Call LLM with tools
-        const response = await this.callLLM(messages, {
-            model,
-            tools: this.formatToolsForLLM(tools)
+        let lastError = null;
+        let retryCount = 0;
+        
+        while (retryCount < this.maxRetries) {
+            try {
+                // Call LLM with tools
+                const response = await this.callLLM(messages, {
+                    model,
+                    tools: this.formatToolsForLLM(tools)
+                });
+                
+                // Check for API error
+                if (response.finishReason === 'error') {
+                    retryCount++;
+                    lastError = 'API returned finish_reason: error';
+                    this.log(`API error (finish_reason: error), retry ${retryCount}/${this.maxRetries}`);
+                    
+                    if (retryCount < this.maxRetries) {
+                        // Wait before retrying (exponential backoff)
+                        await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
+                        continue;
+                    }
+                }
+                
+                // Add assistant's response to state
+                state.addMessage('assistant', response.content, {
+                    toolCalls: response.toolCalls,
+                    finishReason: response.finishReason
+                });
+                
+                return response;
+                
+            } catch (error) {
+                retryCount++;
+                lastError = error.message;
+                this.log(`LLM call error: ${error.message}, retry ${retryCount}/${this.maxRetries}`);
+                
+                if (retryCount < this.maxRetries) {
+                    // Wait before retrying (exponential backoff)
+                    await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
+                } else {
+                    throw error;
+                }
+            }
+        }
+        
+        // If we've exhausted retries, return an error response
+        const errorResponse = {
+            content: `Failed to get a valid response after ${this.maxRetries} retries. Last error: ${lastError}`,
+            toolCalls: null,
+            finishReason: /** @type {'error'} */ ('error'),
+            model: model // Add missing model property
+        };
+        
+        state.addMessage('assistant', errorResponse.content, {
+            finishReason: 'error'
         });
         
-        // Add assistant's response to state
-        state.addMessage('assistant', response.content, {
-            toolCalls: response.toolCalls
-        });
-        
-        return response;
+        return errorResponse;
     }
     
     /**
      * Act phase - Execute tool calls
+     * @param {ToolCall[]} toolCalls - Tools to execute
+     * @param {AgentState} state - Current state
+     * @returns {Promise<Array<{toolName: string, toolCallId: string, success: boolean, result?: any, error?: string}>>}
      */
     async act(toolCalls, state) {
         const observations = [];
@@ -283,6 +347,8 @@ Tools used so far: ${state.toolCalls.length}`;
     
     /**
      * Check if the agent believes the task is complete
+     * @param {ThoughtResponse} thought - The LLM's response
+     * @returns {boolean} Whether the task is complete
      */
     isComplete(thought) {
         // Use finish_reason if available (Kimi API standard)
@@ -382,12 +448,11 @@ Tools used so far: ${state.toolCalls.length}`;
      * Format the final answer
      */
     formatFinalAnswer(thought, state) {
-        return {
-            answer: thought.content,
-            toolsUsed: state.toolCalls.length,
-            iterations: state.iterationCount,
-            observations: state.observations.length
-        };
+        // Log stats for debugging
+        this.log(`Final answer stats: tools=${state.toolCalls.length}, iterations=${state.iterationCount}`);
+        
+        // Return just the content string for compatibility
+        return thought.content;
     }
     
     /**
@@ -396,13 +461,10 @@ Tools used so far: ${state.toolCalls.length}`;
     handleIncomplete(state) {
         const lastMessage = state.conversationHistory[state.conversationHistory.length - 1];
         
-        return {
-            answer: lastMessage?.content || 'Unable to complete the task within iteration limits',
-            incomplete: true,
-            reason: state.shouldStop() ? 'Iteration limit reached' : 'Unknown',
-            toolsUsed: state.toolCalls.length,
-            iterations: state.iterationCount
-        };
+        this.log(`Incomplete execution: tools=${state.toolCalls.length}, iterations=${state.iterationCount}`);
+        
+        // Return just the message string
+        return lastMessage?.content || 'Unable to complete the task within iteration limits';
     }
     
     /**

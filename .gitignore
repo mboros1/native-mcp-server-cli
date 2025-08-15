@@ -28,6 +28,7 @@ libheadless.a
 .history/
 .data/
 .config/
+.cache/
 
 # Debug files
 *.dSYM/

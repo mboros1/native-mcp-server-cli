@@ -1,8 +1,14 @@
+// @ts-check
 /**
  * Agent Orchestrator
  * 
  * Main orchestrator for managing different agent strategies and execution
  */
+
+/** @typedef {import('../../../types').AgentContext} AgentContext */
+/** @typedef {import('../../../types').ApiResponse} ApiResponse */
+/** @typedef {import('../../../types').Tool} Tool */
+/** @typedef {import('./AgentStrategy.js').AgentStrategy} AgentStrategy */
 
 import { log } from '../../logger.js';
 import { AgentState } from './AgentState.js';
@@ -49,6 +55,9 @@ export class AgentOrchestrator {
     
     /**
      * Register a strategy
+     * @param {string} name - Strategy name
+     * @param {AgentStrategy} strategy - Strategy instance
+     * @returns {AgentOrchestrator} This instance for chaining
      */
     registerStrategy(name, strategy) {
         if (!strategy.execute || typeof strategy.execute !== 'function') {
@@ -97,6 +106,14 @@ export class AgentOrchestrator {
     
     /**
      * Main execution method
+     * @param {string} task - Task to execute
+     * @param {Object} [options={}] - Execution options
+     * @param {string} [options.strategy] - Strategy name to use
+     * @param {string} [options.model='kimi'] - Model ID
+     * @param {number} [options.maxIterations] - Max iterations
+     * @param {Object} [options.context={}] - Additional context
+     * @param {boolean} [options.stream=false] - Enable streaming
+     * @returns {Promise<{success: boolean, result?: string, error?: string, stats?: any, strategy: string, checkpoints?: any[]}>} Execution result
      */
     async run(task, options = {}) {
         const {

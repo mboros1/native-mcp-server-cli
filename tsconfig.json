@@ -1,0 +1,52 @@
+{
+  "compilerOptions": {
+    // Type checking
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    
+    // Module resolution
+    "moduleResolution": "node",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ES2022",
+    
+    // Import helpers - this fixes the default import issues
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    
+    // Relaxed checking for JavaScript
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    
+    // Module detection
+    "moduleDetection": "force",
+    
+    // Path mapping
+    "baseUrl": ".",
+    "paths": {
+      "@lib/*": ["./server/lib/*"],
+      "@agents/*": ["./server/lib/agents/*"],
+      "@jsonrpc/*": ["./server/lib/jsonrpc/*"],
+      "@tools/*": ["./server/tools/*"]
+    },
+    
+    // Type acquisition
+    "types": ["node"],
+    "typeRoots": ["./node_modules/@types", "./server/types"]
+  },
+  "include": [
+    "server/**/*.js",
+    "server/**/*.mjs",
+    "server/types/**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "server/test/**/*",
+    "src/**/*",
+    "deps/**/*"
+  ]
+}

@@ -114,9 +114,9 @@ public:
     
     /**
      * Send a chat message and wait for response
+     * Uses the default timeout from the CHAT_SEND procedure (120s)
      */
-    CommandResult SendChatMessage(const std::string& message,
-                                  std::chrono::milliseconds timeout = std::chrono::milliseconds(60000));
+    CommandResult SendChatMessage(const std::string& message);
     
     // === Event Handling ===
     

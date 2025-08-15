@@ -1,8 +1,14 @@
+// @ts-check
 /**
  * API Manager for JSON-RPC Server
  * 
  * Manages API clients and model interactions
  */
+
+/** @typedef {import('../../types').ApiResponse} ApiResponse */
+/** @typedef {import('../../types').ChatMessage} ChatMessage */
+/** @typedef {import('../../types').Tool} Tool */
+/** @typedef {import('../../types').ToolCall} ToolCall */
 
 import axios from 'axios';
 import { log } from '../logger.js';
@@ -101,10 +107,10 @@ export class ApiManager {
      * @param {string} model - Model name (kimi, o3)
      * @param {string} reasoning_effort - Reasoning effort level
      * @param {number} timeout - Timeout in ms
-     * @param {AbortSignal} [abortSignal] - Abort signal for cancellation
-     * @param {Array} [history] - Conversation history
-     * @param {Array} [tools] - Available tools for function calling
-     * @returns {Promise<Object>} - Response object
+     * @param {AbortSignal|null} [abortSignal] - Abort signal for cancellation
+     * @param {ChatMessage[]} [history] - Conversation history
+     * @param {Tool[]|null} [tools] - Available tools for function calling
+     * @returns {Promise<ApiResponse>} - Response object
      */
     async sendMessage(content, model = 'kimi', reasoning_effort = 'medium', timeout = 300000, abortSignal = null, history = [], tools = null) {
         const modelClient = this.clients.get(model);
@@ -163,10 +169,10 @@ export class ApiManager {
         
         try {
             // Create timeout
+            // Note: We can't abort a signal that was passed to us
+            // The caller should use AbortController if they want timeout control
             const timeoutId = setTimeout(() => {
-                if (abortSignal) {
-                    abortSignal.abort();
-                }
+                // Just for logging timeout, actual abort is handled by axios
             }, timeout);
             
             // Make API request
@@ -211,7 +217,7 @@ export class ApiManager {
             
         } catch (err) {
             if (err.name === 'AbortError' || err.code === 'ECONNABORTED') {
-                const timeoutError = new Error(`Request timeout after ${timeout}ms`);
+                const timeoutError = /** @type {any} */ (new Error(`Request timeout after ${timeout}ms`));
                 timeoutError.timeout = true;
                 throw timeoutError;
             }

@@ -28,7 +28,7 @@ export class ChatProcedures {
      * @param {string} [params.model] - Model to use (kimi, o3, etc)
      * @param {number} [params.timeout] - Timeout in ms
      * @param {string} [params.reasoning_effort] - Reasoning effort level
-     * @returns {Object} - {reply: string, timestamp: number, streaming: boolean}
+     * @returns {Promise<Object>} - {reply: string, timestamp: number, streaming: boolean}
      */
     async send(params, context) {
         const { content, model = 'kimi', timeout = 300000, reasoning_effort = 'medium' } = params;
@@ -151,7 +151,7 @@ export class ChatProcedures {
      * 
      * @param {Object} params
      * @param {string} [params.content] - Optional new content
-     * @returns {Object} - {reply: string, timestamp: number, streaming: boolean}
+     * @returns {Promise<Object>} - {reply: string, timestamp: number, streaming: boolean}
      */
     async retry(params, context) {
         const { content } = params;
@@ -181,7 +181,7 @@ export class ChatProcedures {
     /**
      * chat.clear - Clear chat history
      * 
-     * @returns {Object} - {success: boolean, timestamp: number}
+     * @returns {Promise<Object>} - {success: boolean, timestamp: number}
      */
     async clear() {
         this.chatHistory.clear();
@@ -200,7 +200,7 @@ export class ToolProcedures {
     /**
      * tools.list - List available tools
      * 
-     * @returns {Object} - {tools: string[], timestamp: number}
+     * @returns {Promise<Object>} - {tools: string[], timestamp: number}
      */
     async list() {
         const toolNames = AVAILABLE_TOOLS.map(tool => tool.name);
@@ -217,7 +217,7 @@ export class ToolProcedures {
      * @param {Object} params
      * @param {string} params.name - Tool name
      * @param {Object} [params.arguments] - Tool arguments
-     * @returns {Object} - {success: boolean, output: string, error?: string, execution_time_ms: number}
+     * @returns {Promise<Object>} - {success: boolean, output: string, error?: string, execution_time_ms: number}
      */
     async execute(params) {
         const { name, arguments: args = {} } = params;
@@ -255,7 +255,7 @@ export class ToolProcedures {
      * 
      * @param {Object} params
      * @param {string} params.name - Tool name
-     * @returns {Object} - Tool definition
+     * @returns {Promise<Object>} - Tool definition
      */
     async info(params) {
         const { name } = params;
@@ -297,7 +297,7 @@ export class HistoryProcedures {
     /**
      * history.reload - Reload history from C++ file
      * 
-     * @returns {Object} - {success: boolean, message_count: number}
+     * @returns {Promise<Object>} - {success: boolean, message_count: number}
      */
     async reload() {
         const success = this.chatHistory.reload();
@@ -311,7 +311,7 @@ export class HistoryProcedures {
     /**
      * history.sync - Get sync stats for C++ client
      * 
-     * @returns {Object} - Server history state
+     * @returns {Promise<Object>} - Server history state
      */
     async sync() {
         const stats = this.chatHistory.getSyncStats();
@@ -328,7 +328,7 @@ export class HistoryProcedures {
      * history.rotate - Clear memory for new conversation
      * Note: C++ handles actual file rotation
      * 
-     * @returns {Object} - {success: boolean}
+     * @returns {Promise<Object>} - {success: boolean}
      */
     async rotate() {
         this.chatHistory.clear();
@@ -353,7 +353,7 @@ export class SystemProcedures {
     /**
      * rpc.hello - Initial handshake
      * 
-     * @returns {Object} - Server capabilities and info
+     * @returns {Promise<Object>} - Server capabilities and info
      */
     async hello() {
         return {
@@ -375,7 +375,7 @@ export class SystemProcedures {
      * 
      * @param {Object} params
      * @param {number} [params.request_id] - Request ID to cancel
-     * @returns {Object} - {success: boolean, was_running: boolean}
+     * @returns {Promise<Object>} - {success: boolean, was_running: boolean}
      */
     async cancel(params = {}) {
         const { request_id } = params;
@@ -407,7 +407,7 @@ export class SystemProcedures {
     /**
      * system.status - Get system status
      * 
-     * @returns {Object} - System status info
+     * @returns {Promise<Object>} - System status info
      */
     async status() {
         const stats = this.server.getStats();
@@ -425,7 +425,7 @@ export class SystemProcedures {
 /**
  * Register all procedures with the JSON-RPC server
  * 
- * @param {JsonRpcServer} server - JSON-RPC server instance
+ * @param {import('./JsonRpcServer.js').JsonRpcServer} server - JSON-RPC server instance
  * @param {Object} dependencies - Service dependencies
  */
 export function registerAllProcedures(server, dependencies) {

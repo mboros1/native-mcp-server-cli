@@ -12,7 +12,7 @@ import { silenceConsole } from './lib/logger.js';
 silenceConsole();
 
 // Load environment variables quietly
-config({ silent: true });
+config();
 
 
 const moonshot = axios.create({

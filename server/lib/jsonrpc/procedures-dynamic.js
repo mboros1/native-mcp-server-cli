@@ -1,8 +1,18 @@
+// @ts-check
 /**
  * Dynamic JSON-RPC 2.0 Procedure Handlers with MCP Tool Support
  * 
  * This version integrates with the dynamic MCP tool system
  */
+
+/** @typedef {import('../../types').ChatParams} ChatParams */
+/** @typedef {import('../../types').ChatResult} ChatResult */
+/** @typedef {import('../../types').ToolListResult} ToolListResult */
+/** @typedef {import('../../types').ToolExecuteParams} ToolExecuteParams */
+/** @typedef {import('../../types').ToolExecuteResult} ToolExecuteResult */
+/** @typedef {import('../../types').JsonRpcContext} JsonRpcContext */
+/** @typedef {import('../../types').Tool} Tool */
+/** @typedef {import('../../types').ApiResponse} ApiResponse */
 
 import {
     HistoryProcedures,
@@ -115,8 +125,8 @@ export class DynamicChatProcedures {
                     });
                     
                     if (agentResult.success) {
-                        finalContent = agentResult.result.answer || agentResult.result;
-                        log(`Agent completed successfully after ${agentResult.stats.iterations} iterations`);
+                        finalContent = agentResult.result; // result is now a string
+                        log(`Agent completed successfully after ${agentResult.stats?.iterations || 0} iterations`);
                     } else {
                         log(`Agent failed: ${agentResult.error}`);
                         // Fall back to simple tool execution
@@ -258,7 +268,7 @@ export class DynamicToolProcedures {
     /**
      * tools.list - List all available tools (static + dynamic)
      * 
-     * @returns {Object} - {tools: Array<string>}
+     * @returns {Promise<{tools: Array<string>}>} - {tools: Array<string>}
      */
     async list() {
         const toolDefinitions = getAvailableTools();
@@ -272,7 +282,7 @@ export class DynamicToolProcedures {
      * tool.execute - Execute a tool (static or dynamic)
      * 
      * @param {Object} params - {name: string, arguments: Object}
-     * @returns {Object} - Tool execution result
+     * @returns {Promise<Object>} - Tool execution result
      */
     async execute(params) {
         const { name, arguments: args } = params;
@@ -305,7 +315,7 @@ export class DynamicToolProcedures {
      * tool.info - Get information about a specific tool
      * 
      * @param {Object} params - {name: string}
-     * @returns {Object} - Tool information
+     * @returns {Promise<Object>} - Tool information
      */
     async info(params) {
         const { name } = params;
@@ -337,7 +347,7 @@ export class DynamicToolProcedures {
 /**
  * Register all procedures with the JSON-RPC server (Dynamic version)
  * 
- * @param {JsonRpcServer} server - JSON-RPC server instance
+ * @param {import('./JsonRpcServer.js').JsonRpcServer} server - JSON-RPC server instance
  * @param {Object} dependencies - Service dependencies
  */
 export function registerAllProceduresDynamic(server, dependencies) {

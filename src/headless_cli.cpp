@@ -175,7 +175,7 @@ int main(int argc, char* argv[]) {
         } else {
             // Regular chat message
             std::cout << "Sending message..." << std::endl;
-            auto result = app.SendChatMessage(line, 30s);
+            auto result = app.SendChatMessage(line);  // Uses default timeout from procedure
             
             if (!result.success) {
                 std::cerr << "Failed to send message: " << result.response << std::endl;
